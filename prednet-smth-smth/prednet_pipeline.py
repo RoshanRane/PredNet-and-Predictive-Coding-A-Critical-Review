@@ -49,6 +49,7 @@ parser.add_argument("--test_batch_size", type=int, default=10, help="Test batch 
 parser.add_argument("--sample_size", type=int, default=500, help="samples per epoch")
 parser.add_argument("--n_seq_val", type=int, default=100, help="number of sequences to use for validation")
 parser.add_argument("--n_channels", type=int, default=3, help="number of channels")
+parser.add_argument("--data_split_ratio",type=float,default=0.1,help="Splits the dataset for use in the mentioned ratio")
 parser.add_argument("--im_height", type=int, default=128, help="Image height")
 parser.add_argument("--im_width", type=int, default=160, help="Image width")
 parser.add_argument("--time_steps", type=int, default=10, help="number of timesteps used for sequences in training")
@@ -57,6 +58,7 @@ parser.add_argument("--seed", type=int, default=42, help="seed")
 parser.add_argument("--a_filt_sizes", type=tuple, default=(3, 3, 3), help="A_filt_sizes")
 parser.add_argument("--ahat_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="Ahat_filt_sizes")
 parser.add_argument("--r_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="R_filt_sizes")
+parser.add_argument("--frame_selection",type=str,default="smth-smth-baseline-method",help="n frame selection method for sequence generator")
 parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
 parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
 parser.add_argument("--preprocess_data_flag", type=bool, default=False, help="Perform pre-processing")
@@ -114,7 +116,7 @@ if args.preprocess_data_flag:
     # define frames - resize categories in a pandas df
     videos = [vid for vid in glob.glob(args.dest_dir+"/*/*")]
     df = create_dataframe(videos)
-    df.to_csv(args.dest_dir+"/data.csv")
+    df.to_csv(os.path.join(args.dest_dir,"data.csv"))
     print("\n")
 
 else:
@@ -135,8 +137,13 @@ if args.train_model_flag:
     json_file = os.path.join(args.weight_dir, 'prednet_model.json')
 
     # Data files
-    train_data = os.path.join(args.dest_dir, "train")
-    val_data = os.path.join(args.dest_dir, "val")
+    # train_data = os.path.join(args.dest_dir, "train")
+    # val_data = os.path.join(args.dest_dir, "val")
+
+    # Loading data
+    df = pd.read_csv(os.path.join(args.dest_dir,"data.csv"))
+    train_data = df[df['split'] == 'train'][:int(df[df['split'] == 'train'].shape[0] * args.data_split_ratio)]
+    val_data = df[df['split'] == 'val'][:int(df[df['split'] == 'val'].shape[0] * args.data_split_ratio)]
 
     input_shape = (args.n_channels, args.im_height, args.im_width) if K.image_data_format() == 'channels_first' else (args.im_height, args.im_width, args.n_channels)
     stack_sizes = (args.n_channels, 48, 96, 192)
@@ -165,17 +172,18 @@ if args.train_model_flag:
     model = Model(inputs=inputs, outputs=final_errors)
     model.compile(loss=args.loss, optimizer=args.optimizer)
 
-    train_generator = SmthSmthSequenceGenerator(data_csv, "train"
+    train_generator = SmthSmthSequenceGenerator(train_data, "train"
                                                 , nframes=args.nframes
                                                 , batch_size=args.train_batch_size
                                                 , shuffle=True, seed=args.seed
-                                                , nframes_selection_mode = "smth-smth-baseline-method"
+                                                , nframes_selection_mode = args.frame_selection
                                                 )
-            val_generator = SmthSmthSequenceGenerator(data_csv, "val"
+
+    val_generator = SmthSmthSequenceGenerator(val_data, "val"
                                               , nframes=args.nframes
                                               , batch_size=args.train_batch_size
                                               , shuffle=True, seed=args.seed
-                                              , nframes_selection_mode="smth-smth-baseline-method"
+                                              , nframes_selection_mode= args.frame_selection
                                               )
 
     # start with lr of 0.001 and then drop to 0.0001 after 75 epochs
