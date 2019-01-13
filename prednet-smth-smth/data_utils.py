@@ -12,138 +12,10 @@ import pandas as pd
 # from matplotlib import pyplot as plt
 from PIL import Image as pil_image
 from keras import backend as K
-from keras_preprocessing.image import get_keras_submodule
+from keras_preprocessing.image import Iterator, load_img, img_to_array
 import threading
 
-try:
-    IteratorType = get_keras_submodule('utils').Sequence
-except ImportError:
-    IteratorType = object
-
-
-class myIterator(IteratorType):
-    """Base class for image data iterators from keras_preprocessing.image
-    modified for our multiple-crop size purpose.
-
-    # Arguments
-        n: Integer, total number of samples in the dataset to loop over.
-        batch_size: Integer, size of a batch.
-        shuffle: Boolean, whether to shuffle the data between epochs.
-        seed: Random seeding for data shuffling.
-    """
-
-    def __init__(self, n, batch_size, shuffle, seed, grps_boundary=None):
-        '''The grps_boundaries is used to define sub-groups within the whole sample group.'''
-        self.n = n
-        self.batch_size = batch_size   
-        
-        assert (grps_boundary is None) or (grps_boundary<=self.n), "The index 'grps_boundary' must be less than n (number of samples)"
-        self.boundary = grps_boundary
-        if(self.boundary is None):
-            self.total_batches = self.n//self.batch_size  
-        else:
-            self.total_batches = ((self.boundary//self.batch_size)  + (self.n - self.boundary)//self.batch_size) 
-        
-        self.seed = seed
-        self.shuffle = shuffle
-        self.batch_index = 0
-        self.total_batches_seen = 0
-        self.lock = threading.Lock()
-        self.index_array = None
-        self.index_generator = self._flow_index()
-
-    def _set_index_array(self):
-        self.index_array = np.arange(self.n)
-        if self.shuffle:
-            if(self.boundary is None):
-                self.index_array = np.random.choice(
-                    self.index_array
-                    , size=(self.total_batches, self.batch_size)
-                    , replace=False
-                )
-            else:
-                # when there are 2 sub-grps shuffle then seperately and then create their batches at indexes
-                self.index_array = np.append(
-                    np.random.choice(
-                        self.index_array[:self.boundary]
-                    , size=(self.boundary//self.batch_size, self.batch_size)
-                    , replace=False)
-                    , np.random.choice(
-                        self.index_array[self.boundary:]
-                    , size=((self.n - self.boundary)//self.batch_size, self.batch_size)
-                    , replace=False)
-                , axis = 0)
-                np.random.shuffle(self.index_array)
-                
-#         print(self.index_array)
-
-    def __getitem__(self, idx):
-        if idx >= len(self):
-            raise ValueError('Asked to retrieve element {idx}, '
-                             'but the Sequence '
-                             'has length {length}'.format(idx=idx,
-                                                          length=len(self)))
-        if self.seed is not None:
-            np.random.seed(self.seed + self.total_batches_seen)
-        self.total_batches_seen += 1
-            
-        index_array = self.index_array[idx]
-        return self._get_batches_of_transformed_samples(index_array)
-
-
-    def __len__(self):
-        return self.total_batches  
-
-    # check if epoch_end has been reached. If yes, reset the iterator and shuffle the data
-    def on_epoch_end(self):
-        self._set_index_array()
-
-    def reset(self):
-        self.batch_index = 0
-
-    def _flow_index(self):
-        # Ensure self.batch_index is 0.
-        self.reset()
-        while 1:
-#             print(self.batch_index)
-            if self.seed is not None:
-                np.random.seed(self.seed + self.total_batches_seen)
-            if(self.batch_index == 0):
-                self._set_index_array()           
-            cur_batch_index = self.batch_index
-            # increment batch index for next iter
-            if self.batch_index < (self.total_batches -1):
-                self.batch_index += 1
-            else:
-                self.batch_index = 0
-                
-            self.total_batches_seen += 1
-            
-            yield self.index_array[cur_batch_index]
-
-    def __iter__(self):
-        # Needed if we want to do something like:
-        # for x, y in data_gen.flow(...):
-        return self
-
-    def __next__(self, *args, **kwargs):
-#         return next(self.index_generator)
-        return self.next(*args, **kwargs)
-
-    def _get_batches_of_transformed_samples(self, index_array):
-        """Gets a batch of transformed samples.
-        # Arguments
-            index_array: Array of sample indices to include in batch.
-        # Returns
-            A batch of transformed samples.
-        """
-        raise NotImplementedError 
-
-
-# In[66]:
-
-
-class SmthsmthGenerator(myIterator):    
+class SmthsmthGenerator(Iterator):    
     '''
     Data generator that creates batched sequences from the smth-smth dataset for input into PredNet.
     info: to generate the data_csv, run the extract_20bn.py script first on the raw smth-smth videos.
@@ -157,6 +29,10 @@ class SmthsmthGenerator(myIterator):
         using the nframes_selection_mode parameter
         
         split (optional): The split to use for training. Can be one of 'train', 'val', 'test'.
+        
+        target_im_size (optional): Provide a tuple of format (height,width). All video frames
+        are resized to this shape. Default value is (128, 160). 
+        The height or width cannot be greater than this
         
         output_mode (optional): <todo>
         
@@ -178,13 +54,14 @@ class SmthsmthGenerator(myIterator):
                  , nframes
                  , split = ''
                  , batch_size=8
-                 , shuffle=True, seed=None
+                 , target_im_size = (128,160)
+#                  , img_interpolation='nearest'
                  , output_mode='error'
                  , nframes_selection_mode = "smth-smth-baseline-method"
                  , reject_extremes = (None, None)
+                 , shuffle=True, seed=None
+                 , data_format='channels_last'
                  , debug = False
-#                  , img_interpolation='nearest'
-                 , data_format=K.image_data_format()
                 ):
      
         if seed is not None:
@@ -214,22 +91,22 @@ class SmthsmthGenerator(myIterator):
                 print("WARNING: Rejecting videos more than {}-frames resulted in {:.0f}% of the videos({}) to be discarded.".format(
                     max_nframes, float(len(df_subset))*100/len(df), len(df_subset)))
             df = df_subset 
-            
-        # sort them by the crop group
-        self.df = df.sort_values(by=['crop_group']).reset_index(drop=True)
-        # required to initialize the parent myIterator class
-        self.grp1_boundary = len(self.df[self.df['crop_group']==1])     
 
         assert output_mode in {'error', 'prediction'}, 'output_mode must be in {error, prediction}'
         self.output_mode = output_mode
+        assert len(target_im_size) == 2, "Invalid 'target_im_size'. It should be a tuple of format (height, width)" 
+        assert (target_im_size[0] <= min(df.height))and (target_im_size[1] <= min(df.width)), "Invalid 'target_im_size'.\
+(height, width) cannot be greater than the ({:.0f},{:.0f}) which is the minimum in the dataset".format(min(df.height),min(df.width)) 
+        self.df = df.reset_index(drop=True)
+        self.target_im_size = target_im_size
         self.batch_size = batch_size
         self.nframes = nframes
         self.shuffle = shuffle
         self.seed = seed
         self.debug = debug
         if(data_format != 'channels_last'): 
-            raise NotImplementedError("Only 'channels_last' data_format is currently supported by this class.\
-'channels_first' is not supported")
+            raise NotImplementedError("Only 'channels_last' data_format is currently supported.\
+{} option is not supported".format(data_format))
             
         assert nframes_selection_mode in {
             "smth-smth-baseline-method","dynamic-fps"
@@ -239,43 +116,25 @@ class SmthsmthGenerator(myIterator):
         super(SmthsmthGenerator, self).__init__(n = len(self.df),
                                         batch_size=batch_size,
                                         shuffle=shuffle, 
-                                        seed=seed,
-                                        grps_boundary = self.grp1_boundary)
-#         if N_seq is not None and len(self.df) > N_seq:  # select a subset of sequences if want to
-#             self.df = self.df[:N_seq]        
-#         if shuffle:
-#             self.df = self.df.sample(frac=1).reset_index(drop=True)
-
-#         self.X = hkl.load(data_file)  # X will be a 4D array of (n_images, nb_cols, nb_rows, nb_channels)        
+                                        seed=seed)
+        
     
-    def _get_batches_of_transformed_samples(self, index_array):
+    def _get_batches_of_transformed_samples(self, index_array):        
         
-        # check which crop size group is expected...preprocessing (1)
-        if(all(index_array < self.grp1_boundary)):
-            target_im_size = (128,160)
-        elif(all(index_array >= self.grp1_boundary)):
-            target_im_size = (128,224)
-        else:
-            raise ValueError("index_array {} contains a mix of both groups.\
-They should all be either less than {} or greater than {}".format(
-                index_array, self.grp1_boundary, self.grp1_boundary-1))
-        
-#         # 'channels_first' or 'channels_last'?
-#         if(self.data_format == 'channels_last'):
-        batch_x = np.empty(((len(index_array),) +  (self.nframes,) + target_im_size + (3,))
+        batch_x = np.empty(((len(index_array),) +  (self.nframes,) + self.target_im_size + (3,))
                            , dtype=np.float32)
-#         else:
-#             batch_x = np.empty(((len(index_array),) + (3,) +  (self.nframes,) + self.im_shape)
-#                                , dtype=np.float32)       
-
+        
         for i, idx in enumerate(index_array):
             # read the video dir
             vid_dir = self.df.loc[idx, 'path']
-            batch_x[i] = self.fetch_and_preprocess(vid_dir, target_im_size)
+            batch_x[i] = self.fetch_and_preprocess(vid_dir, self.target_im_size)
+            
         if self.output_mode == 'error':  # model outputs errors, so y should be zeros
             batch_y = np.zeros(self.batch_size, np.float32)
         elif self.output_mode == 'prediction':  # output actual pixels
             batch_y = batch_x
+        else:
+            raise NotImplementedError
             
         return batch_x, batch_y
     
@@ -312,7 +171,8 @@ They should all be either less than {} or greater than {}".format(
                         print("removing frame at idx",del_idx)
                     del frames_out[del_idx]
                     i += 1
-                    deleted += 1                
+                    deleted += 1
+                
             elif(total_frames < self.nframes):               
                 # duplicate frames at regular intervals until exactly nframes are left
                 if(self.debug):
@@ -328,20 +188,15 @@ They should all be either less than {} or greater than {}".format(
                     frames_out.insert(dup_idx, frames[dup_idx])
                     i += 1
                     inserted += 1
+                    
             else: #total_frames == self.nframes
                 frames_out = frames      
                 
-#         print(len(frames), len(frames_out), [im.split("/")[-1] for im in im_frames_out])
-#         # 'channels_first' or 'channels_last'?
-#         if(self.data_format == 'channels_last'):
         X = np.empty(((self.nframes,) + target_im_size + (3,)), dtype=np.float32)
-#         else:
-#             X = np.empty((((3,) +  (self.nframes,) + self.im_shape)
-#                                , dtype=np.float32)
             
         for i,frame in enumerate(frames_out):
-            X[i] = self.load_img(frame, target_size=target_im_size)
-#             X[i] = img_to_array(load_img(frame, target_size=target_im_size)) 
+#             X[i] = self.load_img(frame, target_size= target_im_size)
+            X[i] = img_to_array(load_img(frame, target_size=target_im_size)) 
         X = self.preprocess(X)
     
         return X
@@ -355,7 +210,7 @@ They should all be either less than {} or greater than {}".format(
 # }
         im = pil_image.open(img_dir)
         w, h = im.size
-        w_same_aspect =  int((float(target_size[0])/h)*w)
+        w_same_aspect =  int((target_size[0]/h)*w)
         im = im.resize((target_size[0], w_same_aspect), pil_image.ANTIALIAS)
 
         w_crop = (im.size[1] - target_size[1]) // 2
@@ -422,6 +277,7 @@ if __name__ == '__main__':
                                       , nframes=48
                                       , split = "val"
                                       , batch_size=8
+                                      , target_im_size = (128,224)
                                       , shuffle=True, seed=42
                                       , nframes_selection_mode = "smth-smth-baseline-method"
                                      )
