@@ -34,9 +34,13 @@ def plot_video(video=None, stats=False, save_pdf = False, RESULTS_SAVE_DIR='plot
     assert not (type(video)==np.ndarray and vid_path), "Please only speficy either a video or a path."
         
     if vid_path != None:
+        files = []
         vid_list = []
-        for im_path in glob.glob(vid_path + '/*.png'):            
-            im = (imageio.imread(im_path))
+        for im_path in glob.glob(vid_path + '/*.png'): 
+            files.append(im_path)
+     
+        for file in sorted(files):
+            im = (imageio.imread(file))
             vid_list.append(im)
     
         video = np.array(vid_list)
