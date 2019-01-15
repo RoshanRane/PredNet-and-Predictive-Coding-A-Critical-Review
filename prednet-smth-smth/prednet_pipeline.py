@@ -112,11 +112,15 @@ if args.preprocess_data_flag:
 
     else:
         extract_videos(videos)
-
-    # define frames - resize categories in a pandas df
+        
+    #step2 - define frames-resize categories in a pandas df (details in dataset_smthsmth_analysis.ipynb)
     videos = [vid for vid in glob.glob(args.dest_dir+"/*/*")]
-    df = create_dataframe(videos)
-    df.to_csv(os.path.join(args.dest_dir,"data.csv"))
+    df = create_dataframe(videos, os.path.abspath(os.path.join(args.data_dir,"..")))
+    #step3 - randomly set 20k videos as holdout from the train 'split'
+    train_idxs = df[df.split == 'train'].index
+    holdout_idxs = np.random.choice(train_idxs, size=20000,replace=False)
+    df.loc[holdout_idxs,'split'] = 'holdout'
+    df.to_csv(args.dest_dir+"/data.csv", index=False)
     print("\n")
 
 else:

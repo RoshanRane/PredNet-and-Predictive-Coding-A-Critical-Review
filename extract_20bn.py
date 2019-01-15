@@ -6,7 +6,7 @@ from multiprocessing import Pool
 from functools import partial
 import numpy as np
 import pandas as pd
-from matplotlib import pyplot as plt
+from PIL import Image, ImageStat
 
 def split_20bn_dataset(data_dir, train_json_name="something-something-v2-train.json", test_json_name="something-something-v2-test.json", val_json_name="something-something-v2-validation.json" ):
     
@@ -67,31 +67,53 @@ def extract_videos(raw_vids, dest_dir, fps=None):
             print(raw_vid, "converted..")
         
 
-def create_dataframe(vid_list):
+def create_dataframe(vid_list, labels_dir):
+    
     df = pd.DataFrame({"path":vid_list})
     for i, vid_path in enumerate(df['path']):
         # read the first frame of the video
-        im = plt.imread(vid_path + "/image-001.png")
-        #add split information
-        df.loc[i,'split'] = vid_path.split("/")[-2]
+        im = Image.open(vid_path + "/image-001.png")
+        #add video name
+        df.loc[i,'id'] = vid_path.split("/")[-1]
         #add frame resolution information
-        df.loc[i,'height'] = int(im.shape[0])
-        df.loc[i,'width'] = int(im.shape[1])
-        df.loc[i,'aspect_ratio'] = im.shape[0]/im.shape[1]
+        df.loc[i,'height'] = int(im.height)
+        df.loc[i,'width'] = int(im.width)
+        df.loc[i,'aspect_ratio'] = im.height/im.width
         df.loc[i, 'num_of_frames'] = int(len(os.listdir(vid_path)))
         # image statistics
-        arr = im.flatten()
-        df.loc[i, 'first_frame_mean'] = np.mean(arr)
-        df.loc[i, 'first_frame_std'] = np.std(arr)
-        df.loc[i, 'first_frame_min'] = np.min(arr)
-        df.loc[i, 'first_frame_max'] = np.max(arr)
+        im_stat = ImageStat.Stat(im)
+        df.loc[i, 'first_frame_mean'] = np.mean(im_stat.mean)
+        df.loc[i, 'first_frame_var'] = np.mean(im_stat.var)
+        df.loc[i, 'first_frame_min'] = im_stat.extrema[0][0]
+        df.loc[i, 'first_frame_max'] = im_stat.extrema[0][1]
+        im.close()
     #decide crop group (see dataset_smthsmth_analysis.ipynb point(2) for analysis)
     df = df.drop(df[df.width < 300].index)
     df['crop_group'] = 1
     df.loc[df.width >= 420,'crop_group'] = 2
-    #reject extreme frame lengths
-#     df = df.drop(df[z<(z.mean()-3*z.std())].index)
-#     df = df.drop(df[z<(z.mean()+3*z.std())].index)
+    
+    # add label information
+    train_json_name = "/something-something-v2-train.json"
+    val_json_name = "/something-something-v2-validation.json" 
+    labels_json_name = "/something-something-v2-labels.json"
+    test_json_name = "/something-something-v2-test.json"    
+    with open(labels_dir + train_json_name) as f:
+        train_df = pd.DataFrame(json.load(f))
+        train_df['split'] = ['train']*len(train_df)
+    with open(labels_dir + val_json_name) as f:
+        val_df = pd.DataFrame(json.load(f))
+        val_df['split'] = ['val']*len(val_df)
+    with open(labels_dir + test_json_name) as f:
+        test_df = pd.DataFrame(json.load(f))
+        test_df['split'] = ['test']*len(test_df)
+    with open(labels_dir + labels_json_name) as f:
+        templates = json.load(f)
+        
+    labels_df = train_df.append([val_df, test_df], sort=False)
+    df = df.join(labels_df.set_index('id'), on='id')
+    # map the label ID defined in the templates
+    f = lambda x: templates[x.replace('[','').replace(']','')] if(isinstance(x,str)) else x
+    df['template_id'] = df.template.map(f)
     
     return df
 
@@ -154,7 +176,12 @@ python3 extract_20bn.py  /data/videos/something-something-v2/raw /data/videos/so
     
     else:
         extract_videos(videos)
+        
     #step 2 - define frames-resize categories in a pandas df (details in dataset_smthsmth_analysis.ipynb)
     videos = [vid for vid in glob.glob(args.dest_dir+"/*/*")]
-    df = create_dataframe(videos)
-    df.to_csv(args.dest_dir+"/data.csv")
+    df = create_dataframe(videos, os.path.abspath(os.path.join(args.data_dir,"..")))
+    #step3 - randomly set 20k videos as holdout from the train 'split'
+    train_idxs = df[df.split == 'train'].index
+    holdout_idxs = np.random.choice(train_idxs, size=20000,replace=False)
+    df.loc[holdout_idxs,'split'] = 'holdout'
+    df.to_csv(args.dest_dir+"/data.csv", index=False)
