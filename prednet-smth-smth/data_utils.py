@@ -5,15 +5,15 @@
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
-
 import os, glob, sys
 import numpy as np
 import pandas as pd
-# from matplotlib import pyplot as plt
-from PIL import Image as pil_image
+from matplotlib import pyplot as plt
+from PIL import Image, ImageOps
 from keras import backend as K
-from keras_preprocessing.image import Iterator, load_img, img_to_array
+from keras_preprocessing.image import Iterator#, load_img, img_to_array
 import threading
+
 
 class SmthsmthGenerator(Iterator):    
     '''
@@ -34,31 +34,46 @@ class SmthsmthGenerator(Iterator):
         are resized to this shape. Default value is (128, 160). 
         The height or width cannot be greater than this
         
-        output_mode (optional): <todo>
+        output_mode (optional): Used to control what is returned in y (label):
+        if set to 'label' returns the label's template ID.
+        if set to 'prediction' simply returns y = X.
+        if set to 'error' returns a np.zeros() of same shape as x.  
         
         nframes_selection_mode (optional): Can be one of "smth-smth-baseline-method" or "dynamic-fps"
         if set as "smth-smth-baseline-method",
         a) For videos < nframes  : replicate the first and last frames.  
         b) For videos > nframes  : sample consecutive 'nframes' such that the sampled videos segments 
         are mostly in the center of the whole video
-        if set as "dynamic-fps", <to-do>
+        if set as "dynamic-fps", 
         a) For videos < nframes  : Artificially increase fps - Duplicate frames at the begining, end and in between the video to make it equal to nframes.  
         b) For videos > nframes  : Artificially decrease fps - Sample non-consecutive frames from the videos such that the total number of frames equal nframes.
         
         reject_extremes (optional): A tuple which says 
             (reject-videos-with-nframes-lower-than-this, reject-videos-with-nframes-higher-than-this)
-        Recommended to set to (10,64) that corresponds to 3 std. dev. for the smth-smth dataset and will
+        Recommended to set to (12,84) that corresponds to 3 std. dev. for the smth-smth dataset and will
         rejects outliers in the dataset. 
+             
+        img_interpolation (optional): PIL interpolation to use while resizing. 
+        allowed values are {'nearest', 'bicubic', 'bilinear', 'LANCZOS'}
+        
+        random_crop (optional): Data-augumentation. Flag to enable 'random-crop' by the width of the frames. The crop width is decided using
+        a binomial distribution with max probability at the center of the frame.
+        
+        horizontal_flip (optional): Data-augumentation. Flag to enable random 'horizontal_flip' of videos.
+        the labels are also changed appropriately. 
+        Ex. 'Pulling [something] from right to left' -> 'Pulling [something] from left to right' after flipping        
     '''    
     def __init__(self, dataframe
                  , nframes
                  , split = ''
                  , batch_size=8
                  , target_im_size = (128,160)
-#                  , img_interpolation='nearest'
+                 , img_interpolation='nearest'
                  , output_mode='error'
                  , nframes_selection_mode = "smth-smth-baseline-method"
                  , reject_extremes = (None, None)
+                 , random_crop = True
+                 , horizontal_flip = False
                  , shuffle=True, seed=None
                  , data_format='channels_last'
                  , debug = False
@@ -92,7 +107,7 @@ class SmthsmthGenerator(Iterator):
                     max_nframes, float(len(df_subset))*100/len(df), len(df_subset)))
             df = df_subset 
 
-        assert output_mode in {'error', 'prediction'}, 'output_mode must be in {error, prediction}'
+        assert output_mode in {'error', 'prediction', 'label'}, 'output_mode must be in {error, prediction, label}'
         self.output_mode = output_mode
         assert len(target_im_size) == 2, "Invalid 'target_im_size'. It should be a tuple of format (height, width)" 
         assert (target_im_size[0] <= min(df.height))and (target_im_size[1] <= min(df.width)), "Invalid 'target_im_size'.\
@@ -101,6 +116,21 @@ class SmthsmthGenerator(Iterator):
         self.target_im_size = target_im_size
         self.batch_size = batch_size
         self.nframes = nframes
+        
+        _PIL_INTERPOLATION_METHODS = {
+            'LANCZOS': Image.LANCZOS,
+            'nearest': Image.NEAREST,
+            'bilinear':Image.BILINEAR,
+            'bicubic': Image.BICUBIC
+        }
+        assert img_interpolation in _PIL_INTERPOLATION_METHODS.keys(), "Allowed values for 'img_interpolation' are {}".format(
+        set(_PIL_INTERPOLATION_METHODS.keys()))
+        self.img_interpolation = _PIL_INTERPOLATION_METHODS[img_interpolation]
+        self.horizontal_flip = horizontal_flip
+        if(self.horizontal_flip):
+            # if we flip, some labels need to be remapped which contain these orientation information
+            self.some_label_remaps = {166:167, 167:166, 93:94, 94:93, 86:87, 87:86}
+        self.random_crop = random_crop
         self.shuffle = shuffle
         self.seed = seed
         self.debug = debug
@@ -123,16 +153,26 @@ class SmthsmthGenerator(Iterator):
         
         batch_x = np.empty(((len(index_array),) +  (self.nframes,) + self.target_im_size + (3,))
                            , dtype=np.float32)
+        # to store which videos have been horizontally flipped. Needed for output mode 'label'
+        hor_flipped = np.empty(len(index_array),)
         
         for i, idx in enumerate(index_array):
             # read the video dir
             vid_dir = self.df.loc[idx, 'path']
-            batch_x[i] = self.fetch_and_preprocess(vid_dir, self.target_im_size)
+            batch_x[i], hor_flipped[i] = self.fetch_and_preprocess(vid_dir, self.target_im_size)
             
         if self.output_mode == 'error':  # model outputs errors, so y should be zeros
             batch_y = np.zeros(self.batch_size, np.float32)
         elif self.output_mode == 'prediction':  # output actual pixels
             batch_y = batch_x
+        elif self.output_mode == 'label':
+            batch_y = np.asarray(self.df.loc[index_array,"template_id"])
+            if(self.horizontal_flip):
+                # remap the effected horizontally flipped labels
+                for i in range(len(index_array)):
+                    if (hor_flipped[i]) and (batch_y[i] in self.some_label_remaps.keys()):
+                        if(self.debug): print("idx {}: label {} replaced with {}".format(i, batch_y[i], self.some_label_remaps[batch_y[i]]))
+                        batch_y[i] = self.some_label_remaps[batch_y[i]]
         else:
             raise NotImplementedError
             
@@ -150,9 +190,9 @@ class SmthsmthGenerator(Iterator):
                 frames_out = frames[start_frame_idx: start_frame_idx + self.nframes]
             elif(total_frames < self.nframes):
                 # replicate the first frame and last frame at the ends to match self.nframes
-                replicate_cnt_start = (self.nframes - total_frames)//2
-                replicate_cnt_end = (self.nframes - (total_frames + replicate_cnt_start))
-                frames_out = [frames[0]]*(replicate_cnt_start) + frames + [frames[-1]]*(replicate_cnt_end) 
+                rep_begin = np.random.binomial((self.nframes - total_frames), p =0.5)
+                rep_end = (self.nframes - (total_frames + rep_begin))
+                frames_out = [frames[0]]*(rep_begin) + frames + [frames[-1]]*(rep_end) 
             else: #total_frames == self.nframes
                 frames_out = frames
                 
@@ -189,66 +229,69 @@ class SmthsmthGenerator(Iterator):
                     i += 1
                     inserted += 1
                     
-            else: #total_frames == self.nframes
-                frames_out = frames      
+            else: # total_frames == self.nframes
+                frames_out = frames
                 
-        X = np.empty(((self.nframes,) + target_im_size + (3,)), dtype=np.float32)
+### load_vid using keras built-in function
+#         X = np.empty(((self.nframes,) + target_im_size + (3,)), dtype=np.float32)
+#         for i,frame in enumerate(frames_out):
+#             X[i] = img_to_array(load_img(frame, target_size=target_im_size)) 
+        X, hor_flip = self.load_vid(frames_out, target_im_size)
+        # rescale
+        X = X/ 255. 
+    
+        return X, hor_flip
+    
+    
+    def load_vid(self, frames, target_im_size):
+        
+        X = np.empty(((self.nframes,) + target_im_size + (3,)), dtype=np.float32)        
+        target_h, target_w = target_im_size        
+        if(self.horizontal_flip):
+            #flip coin to randomly perform horizontal flipping
+            flip = np.random.randint(0,2) 
+        else:
+            flip = False
+        
+        if(self.debug):
+            debug_print_once = True
+        else:
+            debug_print_once = False
+        
+        w_crop_flag = True # calculate the width crop edges only once
+        
+        for i,frame in enumerate(frames):
+            im = Image.open(frame)
+            if(debug_print_once): print("original im shape (W X H)=",im.size)
+                
+            if(self.random_crop):
+                w_same_aspect =  int((target_h/im.height)*im.width)
+                # resize such that the aspect ratio is conserved for later random cropping
+                if(w_same_aspect > target_w):
+                    im = im.resize((w_same_aspect, target_h), 
+                                  self.img_interpolation)
+                    #width-cropping                
+                    if(w_crop_flag):
+                        w_crop = np.random.binomial((im.width - target_w), p=0.5)
+                        w_crop_flag = False
+                    if(debug_print_once): print("({},{}) width cropped on left and right resp.".format(w_crop, im.width-w_crop-target_w))
+                    im = im.crop((w_crop, 0, target_w + w_crop, im.height))
+                else:
+                    im = im.resize((target_w, target_h), 
+                                  self.img_interpolation)
+            else:
+                im = im.resize((target_w, target_h), 
+                              self.img_interpolation)            
+            if(flip):
+                if(debug_print_once): print("Horizontal flipping performed")
+                im= ImageOps.mirror(im)
+            if(debug_print_once):
+                print("im resized shape",im.size)
+                debug_print_once = False # turn off for this video's remaining frames
+            # move axis and store the array in X
+            X[i] = np.asarray(im, dtype=np.float32)
             
-        for i,frame in enumerate(frames_out):
-#             X[i] = self.load_img(frame, target_size= target_im_size)
-            X[i] = img_to_array(load_img(frame, target_size=target_im_size)) 
-        X = self.preprocess(X)
-    
-        return X
-    
-    
-    def load_img(self, img_dir, target_size):
-#       _PIL_INTERPOLATION_METHODS = {
-#         'nearest': pil_image.NEAREST,
-#         'bilinear': pil_image.BILINEAR,
-#         'bicubic': pil_image.BICUBIC,
-# }
-        im = pil_image.open(img_dir)
-        w, h = im.size
-        w_same_aspect =  int((target_size[0]/h)*w)
-        im = im.resize((target_size[0], w_same_aspect), pil_image.ANTIALIAS)
-
-        w_crop = (im.size[1] - target_size[1]) // 2
-        im = im.crop((0, w_crop, im.size[0], target_size[1]+w_crop))
-        im_arr = np.asarray(im, dtype=np.float32)
-        im_arr = np.moveaxis(im_arr, 0, 1)
-        return im_arr    
-    
-    
-    def preprocess(self, X):
-#         self.image_data_generator = ImageDataGenerator(
-#                                     featurewise_center=False
-#                                      , samplewise_center=False
-#                                      , featurewise_std_normalization=False
-#                                      , samplewise_std_normalization=False
-#                                      , zca_whitening=False
-#                                      , zca_epsilon=1e-06
-#                                      , rotation_range=0
-#                                      , width_shift_range=0.0
-#                                      , height_shift_range=0.0
-#                                      , brightness_range=None
-#                                      , shear_range=0.0
-#                                      , zoom_range=0.0
-#                                      , channel_shift_range=0.0
-#                                      , fill_mode='nearest'
-#                                      , cval=0.0
-#                                      , horizontal_flip=True
-#                                      , vertical_flip=False
-#                                      , rescale=1./255
-#                                      , preprocessing_function=None
-#                                      , data_format='channels_last'
-#                                      , validation_split=0.0
-#                                      , dtype='float32'
-#                                     )
-#         X = self.image_data_generator.standardize(X) # standardize to range [0,1]... preprocessing 3
-#         params = {'flip_horizontal':True}
-#         X = self.image_data_generator.apply_transform(X, params)
-        return X / 255
+        return X, flip
 
     def next(self):
         """For python 2.x. # Returns  The next batch.
@@ -279,18 +322,22 @@ if __name__ == '__main__':
                                       , batch_size=8
                                       , target_im_size = (128,224)
                                       , shuffle=True, seed=42
-                                      , nframes_selection_mode = "smth-smth-baseline-method"
+#                                       , reject_extremes = (16, 80)
+                                      , output_mode = "label"
+                                      , random_crop = False
+                                      , horizontal_flip = True
+                                      , img_interpolation = 'bilinear'
+    #                                   , debug = True
+    #                                   , nframes_selection_mode = "dynamic-fps"
+                                
                                      )
     print("shape of the next 10 generator outputs:")
-    for i in range(10):
+    for i in range(5):
         batch,label = next(val_gen)
         print("Batch shape =", batch.shape)
         print("label shape =", label.shape)
-
-    # visualize some frames
-    # frames = next(val_gen)[0]
-    # f = plt.subplots()
-    # for frm in frames:
-    #     print("(shape, min, mean, max) =",frm.shape ,np.min(frm), np.mean(frm), np.max(frm))
-    #     plt.imshow(frm)
-    #     plt.show() 
+        
+    from viz_utils import plot_video
+    
+    # visualize one video
+    plot_video(next(val_gen)[0][0], save_pdf=True, stats=True)
