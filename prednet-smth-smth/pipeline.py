@@ -1,5 +1,6 @@
 ######################################### Importing libraries ##########################################################
 import os
+import time
 import glob
 import argparse
 
@@ -19,6 +20,8 @@ from keras.callbacks import LearningRateScheduler, ModelCheckpoint
 from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping
 
+import tensorflow as tf
+tf.logging.set_verbosity(tf.logging.ERROR)
 
 import matplotlib
 
@@ -31,8 +34,6 @@ from preprocess_data import split_data, extract_videos, create_dataframe, _chunk
 from data_utils import SmthSmthSequenceGenerator
 from viz_utils import plot_loss_curves
 from prednet import PredNet
-
-from time import time
 ########################################################################################################################
 
 
@@ -54,7 +55,7 @@ parser.add_argument("--fps_dir", type=str, default=None, help="Frame per seconds
 parser.add_argument("--nb_epochs", type=int, default=150, help="Number of epochs")
 parser.add_argument("--generate_results_epoch",type=int, default=50,
                     help="Generates results after mentioned amount of epochs")
-parser.add_argument("--train_batch_size", type=int, default=4, help="Train batch size")
+parser.add_argument("--train_batch_size", type=int, default=32, help="Train batch size")
 parser.add_argument("--test_batch_size", type=int, default=10, help="Test batch size")
 parser.add_argument("--sample_size", type=int, default=500, help="samples per epoch")
 parser.add_argument("--n_seq_val", type=int, default=100, help="number of sequences to use for validation")
@@ -79,16 +80,15 @@ parser.add_argument("--evaluate_model_flag", type=bool, default=False, help="Eva
 parser.add_argument("--generate_results_per_epoch_flag", type=bool, default=False,
                     help="Generates results after every 10 epochs.")
 args = parser.parse_args()
-
-start_time = time()
 ########################################################################################################################
 
 data_csv = os.path.join(args.dest_dir, "data.csv")
+start_time = time.time()
 
 ######################################### Preprocessing data ###########################################################
 # Turn on the argument in parser as True in preprocess_data_flag to perform pre-processing of data.
 if args.preprocess_data_flag:
-    print("Pre-processing data...")
+    print("###################################### Pre-processing data ################################################")
 
     # Validating directories.
     assert os.path.isdir(args.data_dir)
@@ -155,7 +155,7 @@ test_data = df[df['split'] == 'test'][:int(df[df['split'] == 'test'].shape[0] * 
 
 ############################################ Training model ############################################################
 if args.train_model_flag:
-    print("Training Model...")
+    print("########################################## Training Model #################################################")
 
     # create weight directory if it does not exist
     if not os.path.exists(args.weight_dir):
@@ -228,6 +228,10 @@ if args.train_model_flag:
 
     model.summary()
 
+    json_string = model.to_json()
+    with open(json_file, "w") as f:
+        f.write(json_string)
+
     # Implementing early stopping
     earlystop = EarlyStopping(monitor='val_acc', min_delta=0.0001, patience=args.early_stopping_patience, verbose=1,
                               mode='auto')
@@ -240,9 +244,6 @@ if args.train_model_flag:
 
     plot_loss_curves(history, "MSE", "prednet", args.result_dir)
 
-    json_string = model.to_json()
-    with open(json_file, "w") as f:
-        f.write(json_string)
 else:
     pass
 ########################################################################################################################
@@ -250,6 +251,7 @@ else:
 
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
+    print("########################################### Evaluating data ###############################################")
     n_plot = 40
     json_file = os.path.join(args.weight_dir, 'prednet_model.json')
 
@@ -310,14 +312,14 @@ if args.evaluate_model_flag:
                 for t in range(args.time_steps):
                     plt.subplot(gs[t])
                     plt.imshow(X_test[i, t], interpolation='none')
-                    plt.tick_params(axis='both', which='both', bottom='off', top='off', left='off', right='off',
-                                    labelbottom='off', labelleft='off')
+                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                    labelbottom=False, labelleft=False)
                     if t == 0: plt.ylabel('Actual', fontsize=10)
 
                     plt.subplot(gs[t + args.time_steps])
                     plt.imshow(X_hat[i, t], interpolation='none')
-                    plt.tick_params(axis='both', which='both', bottom='off', top='off', left='off', right='off',
-                                    labelbottom='off', labelleft='off')
+                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                    labelbottom=False, labelleft=False)
                     if t == 0: plt.ylabel('Predicted', fontsize=10)
 
                 plt.savefig(plot_save_dir + 'plot_' + filename + '_' + str(i) + '.png')
@@ -325,8 +327,7 @@ if args.evaluate_model_flag:
 
 else:
     pass
-
-
-print("Total Time Elapsed:: ", time()-start_time)
 ########################################################################################################################
 
+end_time = time.time()
+print("Total time taken:", end_time - start_time)
