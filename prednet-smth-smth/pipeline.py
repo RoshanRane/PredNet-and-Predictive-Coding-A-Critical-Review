@@ -31,6 +31,8 @@ from preprocess_data import split_data, extract_videos, create_dataframe, _chunk
 from data_utils import SmthSmthSequenceGenerator
 from viz_utils import plot_loss_curves
 from prednet import PredNet
+
+from time import time
 ########################################################################################################################
 
 
@@ -59,8 +61,8 @@ parser.add_argument("--n_seq_val", type=int, default=100, help="number of sequen
 parser.add_argument("--n_channels", type=int, default=3, help="number of channels")
 parser.add_argument("--data_split_ratio", type=float, default=1.0,
                     help="Splits the dataset for use in the mentioned ratio")
-parser.add_argument("--im_height", type=int, default=128, help="Image height")
-parser.add_argument("--im_width", type=int, default=160, help="Image width")
+parser.add_argument("--im_height", type=int, default=64, help="Image height")
+parser.add_argument("--im_width", type=int, default=80, help="Image width")
 parser.add_argument("--time_steps", type=int, default=48, help="number of timesteps used for sequences in training")
 parser.add_argument("--nframes", type=int, default=48, help="number of frames")
 parser.add_argument("--seed", type=int, default=42, help="seed")
@@ -77,6 +79,8 @@ parser.add_argument("--evaluate_model_flag", type=bool, default=False, help="Eva
 parser.add_argument("--generate_results_per_epoch_flag", type=bool, default=False,
                     help="Generates results after every 10 epochs.")
 args = parser.parse_args()
+
+start_time = time()
 ########################################################################################################################
 
 data_csv = os.path.join(args.dest_dir, "data.csv")
@@ -321,5 +325,8 @@ if args.evaluate_model_flag:
 
 else:
     pass
+
+
+print("Total Time Elapsed:: ", time()-start_time)
 ########################################################################################################################
 
