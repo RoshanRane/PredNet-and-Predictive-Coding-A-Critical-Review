@@ -195,6 +195,7 @@ if args.train_model_flag:
 
     train_generator = SmthSmthSequenceGenerator(train_data
                                                 , nframes=args.nframes
+                                                , target_im_size = (args.im_height, args.im_width)
                                                 , batch_size=args.train_batch_size
                                                 , shuffle=True, seed=args.seed
                                                 , nframes_selection_mode=args.frame_selection
@@ -202,6 +203,7 @@ if args.train_model_flag:
 
     val_generator = SmthSmthSequenceGenerator(val_data
                                               , nframes=args.nframes
+                                              , target_im_size=(args.im_height, args.im_width)
                                               , batch_size=args.train_batch_size
                                               , shuffle=True, seed=args.seed
                                               , nframes_selection_mode=args.frame_selection
@@ -217,7 +219,7 @@ if args.train_model_flag:
     weights_file = os.path.join(args.weight_dir, "results_per_epochs", "model-{epoch:02d}-{val_loss:.5f}.hdf5")
 
     callbacks.append(ModelCheckpoint(filepath=weights_file, monitor='val_loss', verbose=1,
-                                     save_best_only=True, save_weights_only=False,
+                                     save_best_only=False, save_weights_only=False,
                                      mode='auto', period=args.generate_results_epoch))
 
     model.summary()
@@ -271,6 +273,7 @@ if args.evaluate_model_flag:
 
             test_generator = SmthSmthSequenceGenerator(test_data
                                                        , nframes=args.nframes
+                                                       , target_im_size=(args.im_height, args.im_width)
                                                        , batch_size=args.test_batch_size
                                                        , shuffle=True, seed=args.seed
                                                        , nframes_selection_mode="smth-smth-baseline-method"
@@ -319,3 +322,4 @@ if args.evaluate_model_flag:
 else:
     pass
 ########################################################################################################################
+
