@@ -38,52 +38,74 @@ from prednet import PredNet
 
 
 ########################################## Setting up the Parser #######################################################
-parser = argparse.ArgumentParser(description="Pred-net Pipeline")
-parser.add_argument('--data_dir', type=str, help="Data directory",
-                    default="/data/videos/something-something-v2")
-parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), "prednet_model"),
-                    help="Directory for saving trained model and weights")
-parser.add_argument('--result_dir', type=str, default=os.path.join(os.getcwd(), "prednet_results"),
+parser = argparse.ArgumentParser(description="Prednet Pipeline")
+
+parser.add_argument("--preprocess_data_flag", type=bool, default=False, help="Perform pre-processing")
+parser.add_argument("--train_model_flag", type=bool, default=False, help="Train the model")
+parser.add_argument("--evaluate_model_flag", type=bool, default=False, help="Evaluate the model")
+
+# arguments needed for training and evaluation
+parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), "model"),
+                    help="Directory for saving trained weights and model")
+parser.add_argument('--result_dir', type=str, default=os.path.join(os.getcwd(), "results"),
                     help="Directory for saving the results")
-parser.add_argument('--dest_dir', type=str, help="Destination directory",
-                    default="/data/videos/something-something-v2/preprocessed")
-parser.add_argument("--multithread_off", help="switch off multithread operation. By default it is on",
-                    action="store_true")
+parser.add_argument("--nb_epochs", type=int, default=150, help="Number of epochs")
+parser.add_argument("--train_batch_size", type=int, default=32, help="Train batch size")
+parser.add_argument("--test_batch_size", type=int, default=32, help="Test batch size")
+parser.add_argument("--n_channels", type=int, default=3, help="number of channels")
+parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
+parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
+parser.add_argument("--samples_per_epoch", type=int, default=None,
+ help="defines the number of samples that are considered as one epoch during training. By default it is len(train_data).")
+parser.add_argument("--samples_per_epoch_val", type=int, default=None,
+ help="defines the number of samples from val_data to use for validation. By default the whole val_data is used.")
+parser.add_argument("--model_checkpoint",type=int, default=None,
+                    help="Saves model after mentioned amount of epochs. If not mentioned, saves the best model on val dataset")
 parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
-parser.add_argument("--fps_dir", type=str, default=None, help="Frame per seconds directory")
-parser.add_argument("--nb_epochs", type=int, default=150, help="Number of epochs")
-parser.add_argument("--generate_results_epoch",type=int, default=50,
-                    help="Generates results after mentioned amount of epochs")
-parser.add_argument("--train_batch_size", type=int, default=32, help="Train batch size")
-parser.add_argument("--test_batch_size", type=int, default=10, help="Test batch size")
-parser.add_argument("--sample_size", type=int, default=500, help="samples per epoch")
-parser.add_argument("--n_seq_val", type=int, default=100, help="number of sequences to use for validation")
-parser.add_argument("--n_channels", type=int, default=3, help="number of channels")
+
+# arguments needed for SmthsmthGenerator()
 parser.add_argument("--data_split_ratio", type=float, default=1.0,
                     help="Splits the dataset for use in the mentioned ratio")
 parser.add_argument("--im_height", type=int, default=64, help="Image height")
 parser.add_argument("--im_width", type=int, default=80, help="Image width")
-parser.add_argument("--time_steps", type=int, default=48, help="number of timesteps used for sequences in training")
 parser.add_argument("--nframes", type=int, default=48, help="number of frames")
 parser.add_argument("--seed", type=int, default=42, help="seed")
+
+# arguments needed by PredNet model
 parser.add_argument("--a_filt_sizes", type=tuple, default=(3, 3, 3), help="A_filt_sizes")
 parser.add_argument("--ahat_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="Ahat_filt_sizes")
 parser.add_argument("--r_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="R_filt_sizes")
 parser.add_argument("--frame_selection", type=str, default="smth-smth-baseline-method",
                     help="n frame selection method for sequence generator")
-parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
-parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
-parser.add_argument("--preprocess_data_flag", type=bool, default=False, help="Perform pre-processing")
-parser.add_argument("--train_model_flag", type=bool, default=False, help="Train the model")
-parser.add_argument("--evaluate_model_flag", type=bool, default=False, help="Evaluate the model")
-parser.add_argument("--generate_results_per_epoch_flag", type=bool, default=False,
-                    help="Generates results after every 10 epochs.")
+
+# arguments needed when preprocess_data_flag is True
+parser.add_argument('--data_dir', type=str, help="Data directory",
+                    default="/data/videos/something-something-v2")
+parser.add_argument('--dest_dir', type=str, help="Destination directory",
+                    default="/data/videos/something-something-v2/preprocessed")
+parser.add_argument("--multithread_off", help="switch off multithread operation. By default it is on",
+                    action="store_true")
+parser.add_argument("--fps_dir", type=str, default=None, help="Frame per seconds directory")
+
 args = parser.parse_args()
+
+############################################# Common globals for all modes ###########################################################
+json_file = os.path.join(args.weight_dir, 'model.json')
+start_time = time.time()
+
+############################################### Loading data ###########################################################
+data_csv = os.path.join(args.dest_dir, "data.csv")
+df = pd.read_csv(os.path.join(args.dest_dir, "data.csv"), low_memory=False)
+train_data = df[df.split == 'train']
+val_data = df[df.split == 'val']
+test_data = df[df.split == 'holdout']
+train_data = train_data[:int(len(train_data) * args.data_split_ratio)]
+val_data = val_data[:int(len(val_data) * args.data_split_ratio)]
+test_data = test_data[:int(len(test_data) * args.data_split_ratio)]
+
 ########################################################################################################################
 
-data_csv = os.path.join(args.dest_dir, "data.csv")
-start_time = time.time()
 
 ######################################### Preprocessing data ###########################################################
 # Turn on the argument in parser as True in preprocess_data_flag to perform pre-processing of data.
@@ -144,15 +166,6 @@ else:
 ########################################################################################################################
 
 
-############################################### Loading data ###########################################################
-df = pd.read_csv(os.path.join(args.dest_dir, "data.csv"), low_memory=False)
-df = df[df.crop_group == 1]
-train_data = df[df['split'] == 'train'][:int(df[df['split'] == 'train'].shape[0] * args.data_split_ratio)]
-val_data = df[df['split'] == 'val'][:int(df[df['split'] == 'val'].shape[0] * args.data_split_ratio)]
-test_data = df[df['split'] == 'test'][:int(df[df['split'] == 'test'].shape[0] * args.data_split_ratio)]
-########################################################################################################################
-
-
 ############################################ Training model ############################################################
 if args.train_model_flag:
     print("########################################## Training Model #################################################")
@@ -160,9 +173,6 @@ if args.train_model_flag:
     # create weight directory if it does not exist
     if not os.path.exists(args.weight_dir):
         os.makedirs(args.weight_dir)
-
-    weights_file = os.path.join(args.weight_dir, 'prednet_weights.hdf5')  # where weights will be saved
-    json_file = os.path.join(args.weight_dir, 'prednet_model.json')
 
     # Data files
     # train_data = os.path.join(args.dest_dir, "train")
@@ -177,7 +187,7 @@ if args.train_model_flag:
     layer_loss_weights = np.expand_dims(layer_loss_weights, 1)
 
     # equally weight all timesteps except the first
-    time_loss_weights = 1. / (args.time_steps - 1) * np.ones((args.time_steps, 1))
+    time_loss_weights = 1. / (args.nframes - 1) * np.ones((args.nframes, 1))
     time_loss_weights[0] = 0
 
     r_stack_sizes = stack_sizes
@@ -186,7 +196,7 @@ if args.train_model_flag:
     prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes,
                       output_mode='error', return_sequences=True)
 
-    inputs = Input(shape=(args.time_steps,) + input_shape)
+    inputs = Input(shape=(args.nframes,) + input_shape)
 
     errors = prednet(inputs)  # errors will be (batch_size, nt, nb_layers)
     errors_by_time = TimeDistributed(Dense(1, trainable=False), weights=[layer_loss_weights, np.zeros(1)],
@@ -213,18 +223,24 @@ if args.train_model_flag:
                                               , nframes_selection_mode=args.frame_selection
                                               )
 
+    print("len(training_data)=",len(train_generator))    
+    print("len(val_data)=",len(val_generator))
+
     # start with lr of 0.001 and then drop to 0.0001 after 75 epochs
     lr_schedule = lambda epoch: 0.001 if epoch < 75 else 0.0001
     callbacks = [LearningRateScheduler(lr_schedule)]
-
-    # Implementing per epoch system
-    if not os.path.exists(os.path.join(args.weight_dir, "results_per_epochs")):
-        os.makedirs(os.path.join(args.weight_dir, "results_per_epochs"))
-    weights_file = os.path.join(args.weight_dir, "results_per_epochs", "model-{epoch:02d}-{val_loss:.5f}.hdf5")
+    
+    if args.model_checkpoint is None:
+        period = 1
+        weights_file = os.path.join(args.weight_dir, 'checkpoint-best.hdf5')  # where weights will be saved
+    else:
+        assert args.model_checkpoint <= args.nb_epochs, "'model_checkpoint' arg must be less than 'nb_epochs' arg"
+        period = args.model_checkpoint
+        weights_file = os.path.join(args.weight_dir, "checkpoint-{epoch:02d}-loss{val_loss:.5f}.hdf5")
 
     callbacks.append(ModelCheckpoint(filepath=weights_file, monitor='val_loss', verbose=1,
-                                     save_best_only=False, save_weights_only=False,
-                                     mode='auto', period=args.generate_results_epoch))
+                                     save_best_only=True, save_weights_only=False,
+                                     mode='auto', period=period))
 
     model.summary()
 
@@ -232,17 +248,28 @@ if args.train_model_flag:
     with open(json_file, "w") as f:
         f.write(json_string)
 
-    # Implementing early stopping
-    earlystop = EarlyStopping(monitor='val_acc', min_delta=0.0001, patience=args.early_stopping_patience, verbose=1,
-                              mode='auto')
-    callbacks_list = [callbacks, earlystop]
+    # # Implementing early stopping
+    # earlystop = EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=args.early_stopping_patience, verbose=1,
+    #                           mode='auto')
+    # callbacks_list = [callbacks, earlystop]
+    if(args.samples_per_epoch):
+        steps_per_epoch = args.samples_per_epoch // args.train_batch_size
+    else:
+        steps_per_epoch = len(train_generator) // args.train_batch_size
 
-    history = model.fit_generator(train_generator, args.sample_size / args.train_batch_size, args.nb_epochs,
-                                  callbacks=callbacks,
-                                  validation_data=val_generator,
-                                  validation_steps=args.n_seq_val / args.train_batch_size)
+    if(args.samples_per_epoch_val):
+        steps_per_epoch_val = args.samples_per_epoch_val // args.train_batch_size
+    else:
+        steps_per_epoch_val = len(val_generator) // args.train_batch_size
 
-    plot_loss_curves(history, "MSE", "prednet", args.result_dir)
+    history = model.fit_generator(train_generator, 
+    steps_per_epoch = steps_per_epoch,
+    epochs=args.nb_epochs,
+    callbacks=callbacks,
+    validation_data=val_generator,
+    validation_steps=steps_per_epoch_val)
+
+    plot_loss_curves(history, "MSE", "Prednet", args.result_dir)
 
 else:
     pass
@@ -252,82 +279,83 @@ else:
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
-    n_plot = 40
-    json_file = os.path.join(args.weight_dir, 'prednet_model.json')
+    max_plots = 10
 
-    for filename in os.listdir(os.path.join(args.weight_dir, "results_per_epochs")):
-        if filename.endswith(".hdf5"):
-            weights_file = os.path.join(args.weight_dir, "results_per_epochs", filename)
+    for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
 
-            # Load trained model
-            f = open(json_file, 'r')
-            json_string = f.read()
-            f.close()
-            train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet})
-            train_model.load_weights(weights_file)
+        filename = weights_file.split("/")[-1].split(".hdf5")[0]
+        # Load trained model
+        f = open(json_file, 'r')
+        json_string = f.read()
+        f.close()
+        train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet})
+        train_model.load_weights(weights_file)
 
-            # Create testing model (to output predictions)
-            layer_config = train_model.layers[1].get_config()
-            layer_config['output_mode'] = 'prediction'
-            data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
-            test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
-            input_shape = list(train_model.layers[0].batch_input_shape[1:])
-            input_shape[0] = args.time_steps
-            inputs = Input(shape=tuple(input_shape))
-            predictions = test_prednet(inputs)
-            test_model = Model(inputs=inputs, outputs=predictions)
+        # Create testing model (to output predictions)
+        layer_config = train_model.layers[1].get_config()
+        layer_config['output_mode'] = 'prediction'
+        data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
+        test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
+        input_shape = list(train_model.layers[0].batch_input_shape[1:])
+        input_shape[0] = args.nframes
+        inputs = Input(shape=tuple(input_shape))
+        predictions = test_prednet(inputs)
+        test_model = Model(inputs=inputs, outputs=predictions)
 
-            test_generator = SmthSmthSequenceGenerator(test_data
-                                                       , nframes=args.nframes
-                                                       , target_im_size=(args.im_height, args.im_width)
-                                                       , batch_size=args.test_batch_size
-                                                       , shuffle=True, seed=args.seed
-                                                       , nframes_selection_mode="smth-smth-baseline-method"
-                                                       )
-            X_test = test_generator.next()[0]
+        test_generator = SmthSmthSequenceGenerator(test_data
+                                                   , nframes=args.nframes
+                                                   , target_im_size=(args.im_height, args.im_width)
+                                                   , batch_size=args.test_batch_size
+                                                   , shuffle=True, seed=args.seed
+                                                   , nframes_selection_mode=args.frame_selection
+                                                   )
+        print("len(holdout_data)=",len(test_generator))
 
-            X_hat = test_model.predict(X_test, args.test_batch_size)
-            if data_format == 'channels_first':
-                X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
-                X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
+        X_test = test_generator.next()[0]
 
-            # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
-            mse_model = np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2)  # look at all timesteps except the first
-            mse_prev = np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2)
-            if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
-            f = open(os.path.join(args.result_dir, 'prediction_scores_' + filename + '.txt'), 'w')
-            f.write("Model MSE: %f\n" % mse_model)
-            f.write("Previous Frame MSE: %f" % mse_prev)
-            f.close()
+        X_hat = test_model.predict(X_test, args.test_batch_size)
+        if data_format == 'channels_first':
+            X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
+            X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
 
-            # Plot some predictions
-            aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
-            plt.figure(figsize=(args.time_steps, 2 * aspect_ratio))
-            gs = gridspec.GridSpec(2, args.time_steps)
-            gs.update(wspace=0., hspace=0.)
-            plot_save_dir = os.path.join(args.result_dir, 'prediction_plots/')
-            if not os.path.exists(plot_save_dir): os.mkdir(plot_save_dir)
-            plot_idx = np.random.permutation(X_test.shape[0])[:n_plot]
-            for i in plot_idx:
-                for t in range(args.time_steps):
-                    plt.subplot(gs[t])
-                    plt.imshow(X_test[i, t], interpolation='none')
-                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                    labelbottom=False, labelleft=False)
-                    if t == 0: plt.ylabel('Actual', fontsize=10)
+        # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
+        mse_model = np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2)  # look at all timesteps except the first
+        mse_prev = np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2)
+        if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
+        f = open(os.path.join(args.result_dir, 'prediction_scores_' + filename + '.txt'), 'w')
+        f.write("Model MSE: %f\n" % mse_model)
+        f.write("Previous Frame MSE: %f" % mse_prev)
+        f.close()
 
-                    plt.subplot(gs[t + args.time_steps])
-                    plt.imshow(X_hat[i, t], interpolation='none')
-                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                    labelbottom=False, labelleft=False)
-                    if t == 0: plt.ylabel('Predicted', fontsize=10)
+        # Plot some predictions
+        aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
+        plt.figure(figsize=(args.nframes, 2 * aspect_ratio))
+        gs = gridspec.GridSpec(2, args.nframes)
+        gs.update(wspace=0., hspace=0.)
+        plot_save_dir = os.path.join(args.result_dir, 'predictions/')
+        if not os.path.exists(plot_save_dir): os.mkdir(plot_save_dir)
+        plot_idx = np.random.permutation(X_test.shape[0])[:max_plots]
+        for i in plot_idx:
+            for t in range(args.nframes):
+                plt.subplot(gs[t])
+                plt.imshow(X_test[i, t], interpolation='none')
+                plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                labelbottom=False, labelleft=False)
+                if t == 0: plt.ylabel('Actual', fontsize=10)
 
-                plt.savefig(plot_save_dir + 'plot_' + filename + '_' + str(i) + '.png')
-                plt.clf()
+                plt.subplot(gs[t + args.nframes])
+                plt.imshow(X_hat[i, t], interpolation='none')
+                plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                labelbottom=False, labelleft=False)
+                if t == 0: plt.ylabel('Predicted', fontsize=10)
+
+            plt.savefig(plot_save_dir + 'plot_' + filename + '_' + str(i) + '.png')
+            plt.clf()
 
 else:
     pass
 ########################################################################################################################
 
-end_time = time.time()
-print("Total time taken:", end_time - start_time)
+time_elapsed = time.time() - start_time
+print("Time elapsed for complete pipeline: {:.0f}h:{:.0f}m:{:.0f}s".format(
+                time_elapsed//3600, (time_elapsed//60)%60, time_elapsed%60))

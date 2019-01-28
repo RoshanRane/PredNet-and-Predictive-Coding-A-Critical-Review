@@ -171,7 +171,7 @@ class SmthSmthSequenceGenerator(Iterator):
             batch_y = np.asarray(self.df.loc[index_array, "template_id"])
             if (self.horizontal_flip):
                 # remap the effected horizontally flipped labels
-                for i in range(len(index_array)):
+                for i in range(len(batch_y)):
                     if (hor_flipped[i]) and (batch_y[i] in self.some_label_remaps.keys()):
                         if (self.debug): print("idx {}: label {} replaced with {}".format(i, batch_y[i],
                                                                                           self.some_label_remaps[
@@ -179,7 +179,7 @@ class SmthSmthSequenceGenerator(Iterator):
                         batch_y[i] = self.some_label_remaps[batch_y[i]]
         else:
             raise NotImplementedError
-
+            
         return batch_x, batch_y
 
     def fetch_and_preprocess(self, vid_dir, target_im_size):
@@ -305,6 +305,10 @@ class SmthSmthSequenceGenerator(Iterator):
         # the indexing of each batch.
         with self.lock:
             index_array = next(self.index_generator)
+            # A bug in keras.Iterator class causes it to sometimes return index_array of size < batch_size
+            # This occurs at the end of the entire dataset 
+            if(len(index_array)!=self.batch_size ):
+                index_array = next(self.index_generator)                
         # The transformation of images is not under thread lock
         # so it can be done in parallel
         return self._get_batches_of_transformed_samples(index_array)
@@ -324,7 +328,7 @@ if __name__ == '__main__':
                                 , nframes=48
                                 , split="val"
                                 , batch_size=8
-                                , target_im_size=(128, 224)
+                                , target_im_size=(64, 80)
                                 , shuffle=True, seed=42
                                 #                                       , reject_extremes = (16, 80)
                                 , output_mode="label"
