@@ -3,6 +3,7 @@ import os
 import time
 import glob
 import argparse
+import json
 
 from multiprocessing import Pool
 from functools import partial
@@ -65,12 +66,14 @@ parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
 
 # arguments needed for SmthsmthGenerator()
+parser.add_argument("--fps", type=int, default=12,
+                    help="fps of the videos. Allowed values are [1,2,3,6,12]")
 parser.add_argument("--data_split_ratio", type=float, default=1.0,
                     help="Splits the dataset for use in the mentioned ratio")
 parser.add_argument("--im_height", type=int, default=64, help="Image height")
 parser.add_argument("--im_width", type=int, default=80, help="Image width")
-parser.add_argument("--nframes", type=int, default=48, help="number of frames")
-parser.add_argument("--seed", type=int, default=42, help="seed")
+parser.add_argument("--nframes", type=int, default=None, help="number of frames")
+parser.add_argument("--seed", type=int, default=None, help="seed")
 
 # arguments needed by PredNet model
 parser.add_argument("--a_filt_sizes", type=tuple, default=(3, 3, 3), help="A_filt_sizes")
@@ -92,8 +95,17 @@ args = parser.parse_args()
 
 ############################################# Common globals for all modes ###########################################################
 json_file = os.path.join(args.weight_dir, 'model.json')
+history_file = os.path.join(args.weight_dir, 'training_history.json')
 start_time = time.time()
 
+#check if fps given is in valid values
+assert args.fps in [1,2,3,6,12], "allowed values for fps are [1,3,6,12] for this dataset. But given {}".format(args.fps)
+#if nframes is None then SmthsmthGenerator automatically calculates it using the fps
+if(args.nframes is None):
+    fps_to_nframes = {12:36, 6:20, 3:10, 2:8, 1:5} # dict taken from SmthsmthGenerator()
+    time_steps = fps_to_nframes[args.fps]
+else:
+    time_steps = args.nframes
 ############################################### Loading data ###########################################################
 data_csv = os.path.join(args.dest_dir, "data.csv")
 df = pd.read_csv(os.path.join(args.dest_dir, "data.csv"), low_memory=False)
@@ -103,7 +115,9 @@ test_data = df[df.split == 'holdout']
 train_data = train_data[:int(len(train_data) * args.data_split_ratio)]
 val_data = val_data[:int(len(val_data) * args.data_split_ratio)]
 test_data = test_data[:int(len(test_data) * args.data_split_ratio)]
-
+print("num of training videos= ",len(train_data))    
+print("num of val videos= ",len(val_data))
+print("num of test videos= ",len(test_data))
 ########################################################################################################################
 
 
@@ -187,7 +201,7 @@ if args.train_model_flag:
     layer_loss_weights = np.expand_dims(layer_loss_weights, 1)
 
     # equally weight all timesteps except the first
-    time_loss_weights = 1. / (args.nframes - 1) * np.ones((args.nframes, 1))
+    time_loss_weights = 1. / (time_steps - 1) * np.ones((time_steps, 1))
     time_loss_weights[0] = 0
 
     r_stack_sizes = stack_sizes
@@ -196,7 +210,7 @@ if args.train_model_flag:
     prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes,
                       output_mode='error', return_sequences=True)
 
-    inputs = Input(shape=(args.nframes,) + input_shape)
+    inputs = Input(shape=(time_steps,) + input_shape)
 
     errors = prednet(inputs)  # errors will be (batch_size, nt, nb_layers)
     errors_by_time = TimeDistributed(Dense(1, trainable=False), weights=[layer_loss_weights, np.zeros(1)],
@@ -209,6 +223,7 @@ if args.train_model_flag:
 
     train_generator = SmthSmthSequenceGenerator(train_data
                                                 , nframes=args.nframes
+                                                , fps=args.fps
                                                 , target_im_size = (args.im_height, args.im_width)
                                                 , batch_size=args.train_batch_size
                                                 , shuffle=True, seed=args.seed
@@ -217,14 +232,12 @@ if args.train_model_flag:
 
     val_generator = SmthSmthSequenceGenerator(val_data
                                               , nframes=args.nframes
+                                              , fps=args.fps
                                               , target_im_size=(args.im_height, args.im_width)
                                               , batch_size=args.train_batch_size
                                               , shuffle=True, seed=args.seed
                                               , nframes_selection_mode=args.frame_selection
                                               )
-
-    print("len(training_data)=",len(train_generator))    
-    print("len(val_data)=",len(val_generator))
 
     # start with lr of 0.001 and then drop to 0.0001 after 75 epochs
     lr_schedule = lambda epoch: 0.001 if epoch < 75 else 0.0001
@@ -268,8 +281,12 @@ if args.train_model_flag:
     callbacks=callbacks,
     validation_data=val_generator,
     validation_steps=steps_per_epoch_val)
-
-    plot_loss_curves(history, "MSE", "Prednet", args.result_dir)
+    
+    #save training history to a file
+    with open(history_file, 'w') as f:
+        json.dump(history.history, f)
+        
+    plot_loss_curves(history, "MSE", "Prednet", args.weight_dir)
 
 else:
     pass
@@ -297,19 +314,19 @@ if args.evaluate_model_flag:
         data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
         test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
         input_shape = list(train_model.layers[0].batch_input_shape[1:])
-        input_shape[0] = args.nframes
+        input_shape[0] = time_steps
         inputs = Input(shape=tuple(input_shape))
         predictions = test_prednet(inputs)
         test_model = Model(inputs=inputs, outputs=predictions)
 
         test_generator = SmthSmthSequenceGenerator(test_data
                                                    , nframes=args.nframes
+                                                   , fps=args.fps
                                                    , target_im_size=(args.im_height, args.im_width)
                                                    , batch_size=args.test_batch_size
                                                    , shuffle=True, seed=args.seed
                                                    , nframes_selection_mode=args.frame_selection
                                                    )
-        print("len(holdout_data)=",len(test_generator))
 
         X_test = test_generator.next()[0]
 
@@ -329,21 +346,21 @@ if args.evaluate_model_flag:
 
         # Plot some predictions
         aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
-        plt.figure(figsize=(args.nframes, 2 * aspect_ratio))
-        gs = gridspec.GridSpec(2, args.nframes)
+        plt.figure(figsize=(time_steps, 2 * aspect_ratio))
+        gs = gridspec.GridSpec(2, time_steps)
         gs.update(wspace=0., hspace=0.)
         plot_save_dir = os.path.join(args.result_dir, 'predictions/')
         if not os.path.exists(plot_save_dir): os.mkdir(plot_save_dir)
         plot_idx = np.random.permutation(X_test.shape[0])[:max_plots]
         for i in plot_idx:
-            for t in range(args.nframes):
+            for t in range(time_steps):
                 plt.subplot(gs[t])
                 plt.imshow(X_test[i, t], interpolation='none')
                 plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                 labelbottom=False, labelleft=False)
                 if t == 0: plt.ylabel('Actual', fontsize=10)
 
-                plt.subplot(gs[t + args.nframes])
+                plt.subplot(gs[t + time_steps])
                 plt.imshow(X_hat[i, t], interpolation='none')
                 plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                 labelbottom=False, labelleft=False)
