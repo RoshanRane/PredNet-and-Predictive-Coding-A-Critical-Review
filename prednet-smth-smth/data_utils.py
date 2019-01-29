@@ -124,6 +124,13 @@ class SmthSmthSequenceGenerator(Iterator):
         self.df = df.reset_index(drop=True)
         self.target_im_size = target_im_size
         self.batch_size = batch_size
+                
+        assert nframes_selection_mode in {
+            "smth-smth-baseline-method", "dynamic-fps"
+        }, 'nframes_selection_mode must be one of {"smth-smth-baseline-method", "dynamic-fps"}'
+        self.nframes_selection_mode = nframes_selection_mode
+        if(fps!=12):print("SmthsmthGenerator WARNING. Value passed to fps is ignored when 'nframes_selection_mode' is set as 'dynamic-fps'")
+        assert nframes_selection_mode=="dynamic-fps" and nframes is not None,"when 'nframes_selection_mode' is set as 'dynamic-fps' then nframes must be specified and cannot be 'None'. "
         
         assert fps in [1,2,3,6,12], "allowed values for fps are [1,3,6,12] for this dataset. But given {}".format(fps)
         self.fps_ratio = 12//fps
@@ -155,11 +162,6 @@ class SmthSmthSequenceGenerator(Iterator):
         if (data_format != 'channels_last'):
             raise NotImplementedError("Only 'channels_last' data_format is currently supported.\
 {} option is not supported".format(data_format))
-
-        assert nframes_selection_mode in {
-            "smth-smth-baseline-method", "dynamic-fps"
-        }, 'nframes_selection_mode must be one of {"smth-smth-baseline-method", "dynamic-fps"}'
-        self.nframes_selection_mode = nframes_selection_mode
 
         super(SmthSmthSequenceGenerator, self).__init__(n=len(self.df),
                                                         batch_size=batch_size,

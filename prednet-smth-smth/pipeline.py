@@ -62,6 +62,8 @@ parser.add_argument("--samples_per_epoch_val", type=int, default=None,
  help="defines the number of samples from val_data to use for validation. By default the whole val_data is used.")
 parser.add_argument("--model_checkpoint",type=int, default=None,
                     help="Saves model after mentioned amount of epochs. If not mentioned, saves the best model on val dataset")
+parser.add_argument("--early_stopping", type=bool, default=True,
+                    help="enable early-stopping when training")
 parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
 
@@ -243,6 +245,7 @@ if args.train_model_flag:
     lr_schedule = lambda epoch: 0.001 if epoch < 75 else 0.0001
     callbacks = [LearningRateScheduler(lr_schedule)]
     
+    # Model checkpoint callback    
     if args.model_checkpoint is None:
         period = 1
         weights_file = os.path.join(args.weight_dir, 'checkpoint-best.hdf5')  # where weights will be saved
@@ -255,16 +258,10 @@ if args.train_model_flag:
                                      save_best_only=True, save_weights_only=False,
                                      mode='auto', period=period))
 
-    model.summary()
-
-    json_string = model.to_json()
-    with open(json_file, "w") as f:
-        f.write(json_string)
-
-    # # Implementing early stopping
-    # earlystop = EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=args.early_stopping_patience, verbose=1,
-    #                           mode='auto')
-    # callbacks_list = [callbacks, earlystop]
+    # Early stopping callback
+    if(args.early_stopping == True):
+        callbacks.append(EarlyStopping(monitor='val_loss', min_delta=0.00001, patience=args.early_stopping_patience, verbose=1, mode='auto'))
+    
     if(args.samples_per_epoch):
         steps_per_epoch = args.samples_per_epoch // args.train_batch_size
     else:
@@ -274,6 +271,13 @@ if args.train_model_flag:
         steps_per_epoch_val = args.samples_per_epoch_val // args.train_batch_size
     else:
         steps_per_epoch_val = len(val_generator) // args.train_batch_size
+                     
+    # print out model summary and save model json
+    model.summary()
+
+    json_string = model.to_json()
+    with open(json_file, "w") as f:
+        f.write(json_string)
 
     history = model.fit_generator(train_generator, 
     steps_per_epoch = steps_per_epoch,
