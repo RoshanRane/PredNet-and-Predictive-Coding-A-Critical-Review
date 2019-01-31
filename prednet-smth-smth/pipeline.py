@@ -41,9 +41,9 @@ from prednet import PredNet
 ########################################## Setting up the Parser #######################################################
 parser = argparse.ArgumentParser(description="Prednet Pipeline")
 
-parser.add_argument("--preprocess_data_flag", type=bool, default=False, help="Perform pre-processing")
-parser.add_argument("--train_model_flag", type=bool, default=False, help="Train the model")
-parser.add_argument("--evaluate_model_flag", type=bool, default=False, help="Evaluate the model")
+parser.add_argument("--preprocess_data_flag", default=False, action="store_true", help="Perform pre-processing")
+parser.add_argument("--train_model_flag", default=False, action="store_true", help="Train the model")
+parser.add_argument("--evaluate_model_flag", default=False, action="store_true", help="Evaluate the model")
 
 # arguments needed for training and evaluation
 parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), "model"),
@@ -300,7 +300,7 @@ else:
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
-    max_plots = 1
+
     for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
 
@@ -321,21 +321,7 @@ if args.evaluate_model_flag:
         inputs = Input(shape=tuple(input_shape))
         predictions = test_prednet(inputs)
         test_model = Model(inputs=inputs, outputs=predictions)
-        
-        #Create models for error plots
-        error_test_models = []
-        error_output_modes = ['E0', 'E1', 'E2', 'E3']
-        for output_mode in error_output_modes:
-            layer_config['output_mode'] = output_mode    
-            data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
-            error_test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
-            input_shape = list(train_model.layers[0].batch_input_shape[1:])
-            input_shape[0] = args.nframes
-            inputs = Input(shape=tuple(input_shape))
-            error_predictions = error_test_prednet(inputs)
-            error_test_model = Model(inputs=inputs, outputs=error_predictions)
-            error_test_models.append((error_test_model, output_mode))  
-                  
+              
 
         test_generator = SmthSmthSequenceGenerator(test_data
                                                    , nframes=args.nframes
@@ -353,12 +339,6 @@ if args.evaluate_model_flag:
             X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
             X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
             
-        #Create output for error plots 
-        error_X_hats = []
-        for test_model, output_mode in error_test_models:
-            error_X_hat = test_model.predict(X_test, args.test_batch_size)
-            error_X_hats.append((error_X_hat, output_mode))
-            
         # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
         mse_model = np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2)  # look at all timesteps except the first
         mse_prev = np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2)
@@ -368,21 +348,82 @@ if args.evaluate_model_flag:
         f.write("Model MSE: %f\n" % mse_model)
         f.write("Previous Frame MSE: %f\n" % mse_prev)
         f.close()
-                
-        # Plot some predictions
-        aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
 
+        #Create models and outputs for error plots 
+        error_test_models = []
+        error_output_modes = ['E0', 'E1', 'E2', 'E3']
+        for output_mode in error_output_modes:
+            layer_config['output_mode'] = output_mode    
+            data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
+            error_test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
+            input_shape = list(train_model.layers[0].batch_input_shape[1:])
+            input_shape[0] = args.nframes
+            inputs = Input(shape=tuple(input_shape))
+            error_predictions = error_test_prednet(inputs)
+            error_test_model = Model(inputs=inputs, outputs=error_predictions)
+            error_test_models.append((error_test_model, output_mode))  
+
+        # Select specific sub-groups of the data to plot predictions
+        # 1) group 1 - varying freq of labels in dataset
+        #   a) (> 200 videos) 3 labels with (putting + down) hand movement
+        #   b) (< 70 videos)  3 labels with (putting + down) hand movement
+        # 2) group 2 - different hand movements (same freq)
+        #     a) showing to the camera
+        #     b) digging
+        # 3) group 3 - different objects and background 
+        #     a) throwning [something1]
+        #     b) throwning [something2]        
+        # 4) group 4 - ego motion and no ego motion
+        #   a) turning camera / moving camera closer    
+        sub_grps = [ # tuples containing (grp_name, templates)
+        ("1a_freq_putting", ["Putting [something] on a surface"]),
+        ("1b_infreq_putting", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
+        ("2a_hand_motion_showing", ["Showing [something] to the camera"]),
+        ("2b_hand_motion_digging", ["Digging [something] out of [something]"]),
+        ("3a_throwing_object1", ["Throwing [something]"]),
+        ("3b_throwing_object2", ["Throwing [something]"]),
+        ("4a_camera_motion", ["Turning the camera left while filming [something]", 
+                          "Turning the camera downwards while filming [something]", "Approaching [something] with your camera"]),
+        ("4b_no_camera_motion", ["Folding [something]", "Unfolding [something]"])
+        ]
+
+        total_grps = len(sub_grps)
+
+        # sample one video from each sub-group
+        test_data_for_plt = pd.DataFrame()
+        for name, lbls in sub_grps:
+            test_data_for_plt = test_data_for_plt.append(
+                test_data[test_data.template.isin(lbls)].sample(
+                    random_state=args.seed), ignore_index=True)
+
+        X_test = SmthSmthSequenceGenerator( test_data_for_plt
+                                                   , nframes=args.nframes
+                                                   , fps=args.fps
+                                                   , target_im_size=(args.im_height, args.im_width)
+                                                   , batch_size=total_grps
+                                                   , shuffle=False, seed=args.seed
+                                                   , nframes_selection_mode=args.frame_selection
+                                                   ).next()[0]
+
+        X_hat = test_model.predict(X_test, total_grps)
+        
+        #Create outputs for error plots
+        # error_X_hats = []
+        # for test_model, output_mode in error_test_models:
+        #     error_X_hat = test_model.predict(X_test, total_grps)
+        #     error_X_hats.append((error_X_hat, output_mode))
+
+        plot_save_dir = os.path.join(args.result_dir, 'predictions/'+filename)
+        if not os.path.exists(plot_save_dir): 
+            os.makedirs(plot_save_dir)
+
+        aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
         plt.figure(figsize=(time_steps, 6 * aspect_ratio))
         gs = gridspec.GridSpec(6, time_steps)
-
         gs.update(wspace=0., hspace=0.)
-        plot_save_dir = os.path.join(args.result_dir, 'predictions/')
-        if not os.path.exists(plot_save_dir): os.mkdir(plot_save_dir)
-        plot_idx = np.random.permutation(X_test.shape[0])[:max_plots]
-        for i in plot_idx:
+
+        for i in range(total_grps):
             for t in range(time_steps):
-                #Create error output matrices to plot inside the next loop
-                error_matrices = plot_errors(error_X_hats, X_test, ind=i)
            
                 plt.subplot(gs[t])
                 plt.imshow(X_test[i, t], interpolation='none')
@@ -395,17 +436,20 @@ if args.evaluate_model_flag:
                 plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                 labelbottom=False, labelleft=False)
                 if t == 0: plt.ylabel('Predicted', fontsize=10)
-                
+                if t == time_steps//2: plt.xlabel(test_data_for_plt.loc[i, "label"], fontsize=10)
+
+            #Create error output matrices to plot inside the next loop
+            # error_matrices = plot_errors(error_X_hats, X_test, ind=i)
             #Plot errors
-            for layer in range(len(error_matrices)):
-                for t in range(time_steps):
-                    plt.subplot(gs[t + ((2+layer) * time_steps)])
-                    plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
-                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                    labelbottom=False, labelleft=False)
-                    if t == 0: plt.ylabel("E" + str(layer), fontsize=10)
+            # for layer in range(len(error_matrices)):
+            #     for t in range(time_steps):
+            #         plt.subplot(gs[t + ((2+layer) * time_steps)])
+            #         plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
+            #         plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+            #                         labelbottom=False, labelleft=False)
+            #         if t == 0: plt.ylabel("E" + str(layer), fontsize=10)
                     
-            plt.savefig(plot_save_dir + 'plot_' + filename + '_' + str(i) + '.png')
+            plt.savefig(plot_save_dir + "/" + sub_grps[i][0] + '.png')
             plt.clf()
 
 else:

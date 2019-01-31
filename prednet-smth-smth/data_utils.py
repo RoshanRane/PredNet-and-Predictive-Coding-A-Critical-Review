@@ -104,14 +104,14 @@ class SmthSmthSequenceGenerator(Iterator):
             df_subset = df[df.num_of_frames >= min_nframes]
             if (len(df_subset) < 0.7 * len(df)):  # if more than 30% rejected then raise a WARNING
                 print(
-                    "WARNING: Rejecting videos less than {}-frames resulted in {:.0f}% of the videos({}) to be discarded.".format(
+                    "SmthsmthGenerator WARNING: Rejecting videos less than {}-frames resulted in {:.0f}% of the videos({}) to be discarded.".format(
                         min_nframes, float(len(df_subset)) * 100 / len(df), len(df_subset)))
             df = df_subset
         if (max_nframes is not None):
             df_subset = df[df.num_of_frames <= max_nframes]
             if (len(df_subset) < 0.7 * len(df)):  # if more than 30% rejected then raise a WARNING
                 print(
-                    "WARNING: Rejecting videos more than {}-frames resulted in {:.0f}% of the videos({}) to be discarded.".format(
+                    "SmthsmthGenerator WARNING: Rejecting videos more than {}-frames resulted in {:.0f}% of the videos({}) to be discarded.".format(
                         max_nframes, float(len(df_subset)) * 100 / len(df), len(df_subset)))
             df = df_subset
 
@@ -129,8 +129,9 @@ class SmthSmthSequenceGenerator(Iterator):
             "smth-smth-baseline-method", "dynamic-fps"
         }, 'nframes_selection_mode must be one of {"smth-smth-baseline-method", "dynamic-fps"}'
         self.nframes_selection_mode = nframes_selection_mode
-        if(fps!=12):print("SmthsmthGenerator WARNING. Value passed to fps is ignored when 'nframes_selection_mode' is set as 'dynamic-fps'")
-        assert nframes_selection_mode=="dynamic-fps" and nframes is not None,"when 'nframes_selection_mode' is set as 'dynamic-fps' then nframes must be specified and cannot be 'None'. "
+        if(fps!=12 and nframes_selection_mode=="dynamic-fps"):
+            print("SmthsmthGenerator WARNING. Value passed to fps is ignored when 'nframes_selection_mode' is set as 'dynamic-fps'")
+        assert nframes_selection_mode!="dynamic-fps" or nframes is not None,"when 'nframes_selection_mode' is set as 'dynamic-fps' then nframes must be specified and cannot be 'None'. "
         
         assert fps in [1,2,3,6,12], "allowed values for fps are [1,3,6,12] for this dataset. But given {}".format(fps)
         self.fps_ratio = 12//fps
