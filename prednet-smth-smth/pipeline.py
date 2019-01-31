@@ -66,6 +66,7 @@ parser.add_argument("--early_stopping", type=bool, default=True,
                     help="enable early-stopping when training")
 parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
+parser.add_argument("--plots_per_grp", type=int, default=2, help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
 
 # arguments needed for SmthsmthGenerator()
 parser.add_argument("--fps", type=int, default=12,
@@ -374,7 +375,8 @@ if args.evaluate_model_flag:
         #     a) throwning [something1]
         #     b) throwning [something2]        
         # 4) group 4 - ego motion and no ego motion
-        #   a) turning camera / moving camera closer    
+        #   a) turning camera / moving camera closer  
+        #   b) folding / unfolding  
         sub_grps = [ # tuples containing (grp_name, templates)
         ("1a_freq_putting", ["Putting [something] on a surface"]),
         ("1b_infreq_putting", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
@@ -387,31 +389,32 @@ if args.evaluate_model_flag:
         ("4b_no_camera_motion", ["Folding [something]", "Unfolding [something]"])
         ]
 
-        total_grps = len(sub_grps)
+        total_vids_to_plt = args.plots_per_grp * len(sub_grps)
 
         # sample one video from each sub-group
         test_data_for_plt = pd.DataFrame()
         for name, lbls in sub_grps:
             test_data_for_plt = test_data_for_plt.append(
-                test_data[test_data.template.isin(lbls)].sample(
-                    random_state=args.seed), ignore_index=True)
+                test_data[test_data.template.isin(lbls)].sample(n = args.plots_per_grp,
+                    random_state=args.seed)
+                , ignore_index=True)
 
         X_test = SmthSmthSequenceGenerator( test_data_for_plt
                                                    , nframes=args.nframes
                                                    , fps=args.fps
                                                    , target_im_size=(args.im_height, args.im_width)
-                                                   , batch_size=total_grps
+                                                   , batch_size=total_vids_to_plt
                                                    , shuffle=False, seed=args.seed
                                                    , nframes_selection_mode=args.frame_selection
                                                    ).next()[0]
 
-        X_hat = test_model.predict(X_test, total_grps)
+        X_hat = test_model.predict(X_test, total_vids_to_plt)
         
         #Create outputs for error plots
-        # error_X_hats = []
-        # for test_model, output_mode in error_test_models:
-        #     error_X_hat = test_model.predict(X_test, total_grps)
-        #     error_X_hats.append((error_X_hat, output_mode))
+        error_X_hats = []
+        for test_model, output_mode in error_test_models:
+            error_X_hat = test_model.predict(X_test, total_vids_to_plt)
+            error_X_hats.append((error_X_hat, output_mode))
 
         plot_save_dir = os.path.join(args.result_dir, 'predictions/'+filename)
         if not os.path.exists(plot_save_dir): 
@@ -422,7 +425,7 @@ if args.evaluate_model_flag:
         gs = gridspec.GridSpec(6, time_steps)
         gs.update(wspace=0., hspace=0.)
 
-        for i in range(total_grps):
+        for i in range(total_vids_to_plt):
             for t in range(time_steps):
            
                 plt.subplot(gs[t])
@@ -439,17 +442,19 @@ if args.evaluate_model_flag:
                 if t == time_steps//2: plt.xlabel(test_data_for_plt.loc[i, "label"], fontsize=10)
 
             #Create error output matrices to plot inside the next loop
-            # error_matrices = plot_errors(error_X_hats, X_test, ind=i)
-            #Plot errors
-            # for layer in range(len(error_matrices)):
-            #     for t in range(time_steps):
-            #         plt.subplot(gs[t + ((2+layer) * time_steps)])
-            #         plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
-            #         plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-            #                         labelbottom=False, labelleft=False)
-            #         if t == 0: plt.ylabel("E" + str(layer), fontsize=10)
+            error_matrices = plot_errors(error_X_hats, X_test, ind=i)
+            # Plot errors
+            for layer in range(len(error_matrices)):
+                for t in range(time_steps):
+                    plt.subplot(gs[t + ((2+layer) * time_steps)])
+                    plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
+                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                    labelbottom=False, labelleft=False)
+                    if t == 0: plt.ylabel("E" + str(layer), fontsize=10)
                     
-            plt.savefig(plot_save_dir + "/" + sub_grps[i][0] + '.png')
+            grp_i = i//args.plots_per_grp
+            sub_grp_i =  i%args.plots_per_grp
+            plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')
             plt.clf()
 
 else:
