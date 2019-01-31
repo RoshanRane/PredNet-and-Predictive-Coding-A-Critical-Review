@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
+from skimage.transform import rescale
 import sys
 import time
 
@@ -137,3 +138,28 @@ def plot_video(video=None, stats=False, save_pdf=False, RESULTS_SAVE_DIR='plots'
                 pdf.savefig(fig, bbox_inches='tight')
     else:
         plt.show()
+        
+def plot_errors(error_outputs, X_test, ind=0):
+    '''
+    function used to produce error_matrices for the evaluation mode in the pipeline
+    '''
+    layer_error = []
+    matrices = []
+    
+    for layer in range(len(error_outputs)):  
+        matrices.append([])
+        layer_error = error_outputs[layer][0]
+        vid_error = layer_error[ind]
+        for frame in vid_error:            
+            frame_matrix =  np.transpose(np.sum([mat for mat in vid_error], axis=0), (2,0,1))
+            one_matrix = (np.sum([mat for mat in frame_matrix], axis=0)/vid_error.shape[0])
+            one_matrix_rescaled = rescale(one_matrix, (2**layer, 2**layer))
+            matrices[layer].append(one_matrix_rescaled)              
+
+    return matrices 
+
+
+
+
+
+      

@@ -33,7 +33,7 @@ import matplotlib.gridspec as gridspec
 # Custom imports
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
 from data_utils import SmthSmthSequenceGenerator
-from viz_utils import plot_loss_curves
+from viz_utils import plot_loss_curves, plot_errors
 from prednet import PredNet
 ########################################################################################################################
 
@@ -300,11 +300,10 @@ else:
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
-    max_plots = 10
-
+    max_plots = 1
     for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
-
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
+
         # Load trained model
         f = open(json_file, 'r')
         json_string = f.read()
@@ -322,6 +321,21 @@ if args.evaluate_model_flag:
         inputs = Input(shape=tuple(input_shape))
         predictions = test_prednet(inputs)
         test_model = Model(inputs=inputs, outputs=predictions)
+        
+        #Create models for error plots
+        error_test_models = []
+        error_output_modes = ['E0', 'E1', 'E2', 'E3']
+        for output_mode in error_output_modes:
+            layer_config['output_mode'] = output_mode    
+            data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
+            error_test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
+            input_shape = list(train_model.layers[0].batch_input_shape[1:])
+            input_shape[0] = args.nframes
+            inputs = Input(shape=tuple(input_shape))
+            error_predictions = error_test_prednet(inputs)
+            error_test_model = Model(inputs=inputs, outputs=error_predictions)
+            error_test_models.append((error_test_model, output_mode))  
+                  
 
         test_generator = SmthSmthSequenceGenerator(test_data
                                                    , nframes=args.nframes
@@ -338,26 +352,38 @@ if args.evaluate_model_flag:
         if data_format == 'channels_first':
             X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
             X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
-
+            
+        #Create output for error plots 
+        error_X_hats = []
+        for test_model, output_mode in error_test_models:
+            error_X_hat = test_model.predict(X_test, args.test_batch_size)
+            error_X_hats.append((error_X_hat, output_mode))
+            
         # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
         mse_model = np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2)  # look at all timesteps except the first
         mse_prev = np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2)
+        
         if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
         f = open(os.path.join(args.result_dir, 'prediction_scores_' + filename + '.txt'), 'w')
         f.write("Model MSE: %f\n" % mse_model)
-        f.write("Previous Frame MSE: %f" % mse_prev)
+        f.write("Previous Frame MSE: %f\n" % mse_prev)
         f.close()
-
+                
         # Plot some predictions
         aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
-        plt.figure(figsize=(time_steps, 2 * aspect_ratio))
-        gs = gridspec.GridSpec(2, time_steps)
+
+        plt.figure(figsize=(time_steps, 6 * aspect_ratio))
+        gs = gridspec.GridSpec(6, time_steps)
+
         gs.update(wspace=0., hspace=0.)
         plot_save_dir = os.path.join(args.result_dir, 'predictions/')
         if not os.path.exists(plot_save_dir): os.mkdir(plot_save_dir)
         plot_idx = np.random.permutation(X_test.shape[0])[:max_plots]
         for i in plot_idx:
             for t in range(time_steps):
+                #Create error output matrices to plot inside the next loop
+                error_matrices = plot_errors(error_X_hats, X_test, ind=i)
+           
                 plt.subplot(gs[t])
                 plt.imshow(X_test[i, t], interpolation='none')
                 plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
@@ -369,7 +395,16 @@ if args.evaluate_model_flag:
                 plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                 labelbottom=False, labelleft=False)
                 if t == 0: plt.ylabel('Predicted', fontsize=10)
-
+                
+            #Plot errors
+            for layer in range(len(error_matrices)):
+                for t in range(time_steps):
+                    plt.subplot(gs[t + ((2+layer) * time_steps)])
+                    plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
+                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                    labelbottom=False, labelleft=False)
+                    if t == 0: plt.ylabel("E" + str(layer), fontsize=10)
+                    
             plt.savefig(plot_save_dir + 'plot_' + filename + '_' + str(i) + '.png')
             plt.clf()
 
