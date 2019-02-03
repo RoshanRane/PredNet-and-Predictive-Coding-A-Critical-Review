@@ -35,7 +35,7 @@ import matplotlib.gridspec as gridspec
 # Custom imports
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
 from data_utils import SmthSmthSequenceGenerator
-from viz_utils import plot_loss_curves, plot_errors
+from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r
 from prednet import PredNet
 ########################################################################################################################
 
@@ -49,6 +49,7 @@ parser.add_argument("--evaluate_model_flag", default=False, action="store_true",
 
 parser.add_argument("--finetune_extrapolate_model_flag", default=False,action="store_true",
                     help="Extrapolate the model.")
+parser.add_argument("--extra_plots_flag", default=False, action="store_true", help="Evaluate the model")
 
 # arguments needed for training and evaluation
 parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), "model"),
@@ -82,6 +83,8 @@ parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
 parser.add_argument("--plots_per_grp", type=int, default=2,
                     help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
+parser.add_argument("--std_param", type=float, default=0.5,
+                    help="parameter for the plotting R function: how many times the STD should we shaded")
 
 # arguments needed for SmthsmthGenerator()
 parser.add_argument("--fps", type=int, default=12,
@@ -448,7 +451,6 @@ if args.evaluate_model_flag:
 
     for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
-
         # Load trained model
         f = open(json_file, 'r')
         json_string = f.read()
@@ -502,26 +504,12 @@ if args.evaluate_model_flag:
         std_model = np.std(mse_model_list)
         mse_prev = np.mean(mse_prev_list)
         std_prev = np.std(mse_prev_list)
-
+       
         if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
         f = open(os.path.join(args.result_dir, 'prediction_scores_' + filename + '.txt'), 'w')
         f.write("Model MSE: {:.4f}+-{:.4f}\n".format(mse_model, std_model))
         f.write("Previous Frame MSE: {:.4f}+-{:.4f}\n".format(mse_prev, std_prev))
         f.close()
-
-        # Create models and outputs for error plots
-        error_test_models = []
-        error_output_modes = ['E0', 'E1', 'E2', 'E3']
-        for output_mode in error_output_modes:
-            layer_config['output_mode'] = output_mode
-            data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
-            error_test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
-            input_shape = list(train_model.layers[0].batch_input_shape[1:])
-            input_shape[0] = args.nframes
-            inputs = Input(shape=tuple(input_shape))
-            error_predictions = error_test_prednet(inputs)
-            error_test_model = Model(inputs=inputs, outputs=error_predictions)
-            error_test_models.append((error_test_model, output_mode))
 
             # Select specific sub-groups of the data to plot predictions
         # 1) group 1 - varying freq of labels in dataset
@@ -550,6 +538,8 @@ if args.evaluate_model_flag:
         ]
 
         total_vids_to_plt = args.plots_per_grp * len(sub_grps)
+        total_grps = len(sub_grps)
+
 
         # sample one video from each sub-group
         test_data_for_plt = pd.DataFrame()
@@ -570,19 +560,54 @@ if args.evaluate_model_flag:
 
         X_hat = test_model.predict(X_test, total_vids_to_plt)
 
-        # Create outputs for error plots
-        error_X_hats = []
-        for test_model, output_mode in error_test_models:
-            error_X_hat = test_model.predict(X_test, total_vids_to_plt)
-            error_X_hats.append((error_X_hat, output_mode))
+        ############################################## Extra plots ###########################################################
+       
+        if args.extra_plots_flag:
+            
+            #Create models for error and R plots
+            extra_test_models = []
+            extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'R0', 'R1', 'R2', 'R3']
+            for output_mode in extra_output_modes:
+                layer_config['output_mode'] = output_mode    
+                data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
+                extra_test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
+                input_shape = list(train_model.layers[0].batch_input_shape[1:])
+                input_shape[0] = args.nframes
+                inputs = Input(shape=tuple(input_shape))
+                extra_predictions = extra_test_prednet(inputs)
+                extra_test_model = Model(inputs=inputs, outputs=extra_predictions)
+                extra_test_models.append((extra_test_model, output_mode))  
+
+            #Create outputs for extra plots
+            error_X_hats = []
+            for test_model, output_mode in extra_test_models:
+                if output_mode[0]=='E':
+                    error_X_hat = test_model.predict(X_test, total_grps) 
+                    error_X_hats.append((error_X_hat, output_mode))
+
+            R_X_hats = []
+            for test_model, output_mode in extra_test_models:
+                if output_mode[0]=='R':
+                    R_X_hat = test_model.predict(X_test, total_grps) 
+                    R_X_hats.append((R_X_hat, output_mode))
+
+        
+        ######################################################################################################################
 
         plot_save_dir = os.path.join(args.result_dir, 'predictions/' + filename)
         if not os.path.exists(plot_save_dir):
             os.makedirs(plot_save_dir)
 
         aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
-        plt.figure(figsize=(time_steps, 6 * aspect_ratio))
-        gs = gridspec.GridSpec(6, time_steps)
+        
+        if args.extra_plots_flag:
+            plt.figure(figsize=(time_steps, 9 * aspect_ratio))
+            gs = gridspec.GridSpec(9, time_steps)
+
+        else:
+            plt.figure(figsize=(time_steps, 2 * aspect_ratio))
+            gs = gridspec.GridSpec(2, time_steps)
+        
         gs.update(wspace=0., hspace=0.)
 
         for i in range(total_vids_to_plt):
@@ -601,17 +626,28 @@ if args.evaluate_model_flag:
                 if t == 0: plt.ylabel('Predicted', fontsize=10)
                 if t == time_steps // 2: plt.xlabel(test_data_for_plt.loc[i, "label"], fontsize=10)
 
-            # Create error output matrices to plot inside the next loop
-            error_matrices = plot_errors(error_X_hats, X_test, ind=i)
-            # Plot errors
-            for layer in range(len(error_matrices)):
-                for t in range(time_steps):
-                    plt.subplot(gs[t + ((2 + layer) * time_steps)])
-                    plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
-                    plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                    labelbottom=False, labelleft=False)
-                    if t == 0: plt.ylabel("E" + str(layer), fontsize=10)
+            ############################################## Extra plots #######################################################
+            if args.extra_plots_flag:
 
+                #Create error output matrices to plot inside the next loop
+                error_matrices = plot_errors(error_X_hats, X_test, ind=i)
+                #Plot errors
+                for layer in range(len(error_matrices)):
+                        for t in range(time_steps):
+                            plt.subplot(gs[t + ((2+layer) * time_steps)])
+                            plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
+                            plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                            labelbottom=False, labelleft=False)
+                            if t == 0: plt.ylabel("E" + str(layer), fontsize=10)                         
+                
+                #Create plots for variation in R               
+                plt.subplot(gs[(6 * time_steps) :])
+                plot_changes_in_r(R_X_hats, i, std_param = args.std_param)
+                plt.ylabel("Mean R activations", fontsize=10)
+                plt.legend(['R0','R1','R2','R3'])
+                
+        #####################################################################################################################
+                
             grp_i = i // args.plots_per_grp
             sub_grp_i = i % args.plots_per_grp
             plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')

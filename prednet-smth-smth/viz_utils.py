@@ -1,3 +1,4 @@
+from collections import defaultdict
 import glob
 import imageio
 from matplotlib.backends.backend_pdf import PdfPages
@@ -150,15 +151,36 @@ def plot_errors(error_outputs, X_test, ind=0):
         matrices.append([])
         layer_error = error_outputs[layer][0]
         vid_error = layer_error[ind]
-        for frame in vid_error:            
-            frame_matrix =  np.transpose(np.sum([mat for mat in vid_error], axis=0), (2,0,1))
-            one_matrix = (np.sum([mat for mat in frame_matrix], axis=0)/vid_error.shape[0])
-            one_matrix_rescaled = rescale(one_matrix, (2**layer, 2**layer))
-            matrices[layer].append(one_matrix_rescaled)              
+        for frame in vid_error:   
+            frame = np.transpose(frame, (2,0,1))
+            frame_matrix =  np.sum([mat for mat in frame], axis=0)
+            frame_matrix_rescaled = rescale(frame_matrix, (2**layer, 2**layer))
+            matrices[layer].append(frame_matrix_rescaled)              
 
     return matrices 
 
-
+def plot_changes_in_r(X_hats, ind, std_param=0.5):
+    '''
+    funtion used to produce the R plots in the evaluation mode in the pipeline
+    '''
+    vid = [(x_hat[0][ind], x_hat[1]) for x_hat in X_hats]
+    frames = defaultdict(lambda : defaultdict(float))
+     
+    for channel in range(len(vid)):
+        for ind, frame in enumerate(vid[channel][0]):   
+            frames[channel][ind] = (np.average(np.abs(frame)), np.std(np.abs(frame)))
+        
+        
+        y = [tup[0] for tup in frames[channel].values()]
+        x = [n for n in range(len(y))]
+        std = [tup[1] for tup in frames[channel].values()]
+        
+        plt.fill_between(x, [(val-std_param*dev) for val,dev in zip(y,std)], 
+                             [(val+std_param*dev) for val,dev in zip(y,std)],
+                            alpha=0.1)
+        plt.xticks([n for n in range(len(y))])
+        plt.grid(True)
+        plt.plot(x, y)
 
 
 
