@@ -49,7 +49,8 @@ parser.add_argument("--evaluate_model_flag", default=False, action="store_true",
 
 parser.add_argument("--finetune_extrapolate_model_flag", default=False,action="store_true",
                     help="Extrapolate the model.")
-parser.add_argument("--extra_plots_flag", default=False, action="store_true", help="Evaluate the model")
+parser.add_argument("--extra_plots_flag", default=False, action="store_true", 
+                    help="Evaluate the model and show error and R plots")
 
 # arguments needed for training and evaluation
 parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), "model"),
@@ -560,7 +561,7 @@ if args.evaluate_model_flag:
 
         X_hat = test_model.predict(X_test, total_vids_to_plt)
 
-        ############################################## Extra plots ###########################################################
+       ############################################## Extra plots ##############################################
        
         if args.extra_plots_flag:
             
@@ -569,7 +570,8 @@ if args.evaluate_model_flag:
             extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'R0', 'R1', 'R2', 'R3']
             for output_mode in extra_output_modes:
                 layer_config['output_mode'] = output_mode    
-                data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
+                data_format = (layer_config['data_format'] if 'data_format' in layer_config 
+                                else layer_config['dim_ordering'])
                 extra_test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
                 input_shape = list(train_model.layers[0].batch_input_shape[1:])
                 input_shape[0] = args.nframes
@@ -600,58 +602,68 @@ if args.evaluate_model_flag:
 
         aspect_ratio = float(X_hat.shape[2]) / X_hat.shape[3]
         
-        if args.extra_plots_flag:
-            plt.figure(figsize=(time_steps, 9 * aspect_ratio))
-            gs = gridspec.GridSpec(9, time_steps)
-
-        else:
-            plt.figure(figsize=(time_steps, 2 * aspect_ratio))
-            gs = gridspec.GridSpec(2, time_steps)
-        
-        gs.update(wspace=0., hspace=0.)
-
         for i in range(total_vids_to_plt):
-            for t in range(time_steps):
+            
+            if args.extra_plots_flag:
+                fig, ax = plt.subplots(ncols=1, nrows=7, sharex=True, figsize=(time_steps, 9 * aspect_ratio), 
+                                       gridspec_kw={'height_ratios':[1,1,1,1,1,1,3]})
+            else:
+                fig, ax = plt.subplots(ncols=1, nrows=2, sharex=True, figsize=(time_steps, 2 * aspect_ratio))
 
-                plt.subplot(gs[t])
-                plt.imshow(X_test[i, t], interpolation='none')
-                plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                labelbottom=False, labelleft=False)
-                if t == 0: plt.ylabel('Actual', fontsize=10)
+            #Plot video
+            ax[0].imshow(np.concatenate([t for t in X_test[i]], axis=1), interpolation='none', aspect="auto")
+            ax[0].tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                            labelbottom=False, labelleft=False)
+            ax[0].set_ylabel(r'Actual', fontsize=10)
+            ax[0].set_xlim(0,time_steps*args.im_width)
+            
+            #Plot predictions
+            ax[1].imshow(np.concatenate([t for t in X_test[i]], axis=1), interpolation='none', aspect="auto")
+            ax[1].tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+                                            labelbottom=False, labelleft=False)
+            ax[1].set_ylabel(r'Prediction', fontsize=10)
+            ax[1].set_xlim(0,time_steps*args.im_width)
 
-                plt.subplot(gs[t + time_steps])
-                plt.imshow(X_hat[i, t], interpolation='none')
-                plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                labelbottom=False, labelleft=False)
-                if t == 0: plt.ylabel('Predicted', fontsize=10)
-                if t == time_steps // 2: plt.xlabel(test_data_for_plt.loc[i, "label"], fontsize=10)
 
-            ############################################## Extra plots #######################################################
+            ######################################### Extra plot #############################################
             if args.extra_plots_flag:
 
                 #Create error output matrices to plot inside the next loop
                 error_matrices = plot_errors(error_X_hats, X_test, ind=i)
                 #Plot errors
-                for layer in range(len(error_matrices)):
-                        for t in range(time_steps):
-                            plt.subplot(gs[t + ((2+layer) * time_steps)])
-                            plt.imshow(error_matrices[layer][t], interpolation='nearest', cmap='gray')
-                            plt.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
-                                            labelbottom=False, labelleft=False)
-                            if t == 0: plt.ylabel("E" + str(layer), fontsize=10)                         
-                
-                #Create plots for variation in R               
-                plt.subplot(gs[(6 * time_steps) :])
-                plot_changes_in_r(R_X_hats, i, std_param = args.std_param)
-                plt.ylabel("Mean R activations", fontsize=10)
-                plt.legend(['R0','R1','R2','R3'])
+                for layer in range(len(error_matrices)):                                   
+                        ax[layer+2].imshow(np.concatenate([t for t in error_matrices[layer]], axis=1), 
+                                           interpolation='nearest', cmap='gray', aspect="auto")
+                        ax[layer+2].tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
+                                                right=False, labelbottom=False, labelleft=False)
+                        ax[layer+2].set_ylabel(r"E" + str(layer), fontsize=10)
+                        ax[layer+2].set_xlim(0,time_steps*args.im_width)
+
+                                                
+                #Create values for R plots      
+                results = plot_changes_in_r(R_X_hats, i, std_param=args.std_param)
+                #Plot R plots
+                for layer in results:
+                    (y,x,std) = layer[0]
+                    x = [args.im_width/2+item*args.im_width for item in x]
+                    ax[6].fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
+                                     [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
+                    ax[6].plot(x, y)
+                    
+                ax[6].set_xlim(0,time_steps*args.im_width)
+                ax[6].set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
+                ax[6].set_xticklabels(np.arange(1,time_steps+1))
+                ax[6].grid(True)                  
+                ax[6].set_ylabel(r"Mean R activations", fontsize=10)
+                ax[6].legend(['R0','R1','R2','R3'])
                 
         #####################################################################################################################
                 
             grp_i = i // args.plots_per_grp
             sub_grp_i = i % args.plots_per_grp
-            plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')
-            plt.clf()
+            fig.subplots_adjust(hspace=0., wspace=0.)
+            fig.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')
+            fig.clf()
 
 else:
     pass

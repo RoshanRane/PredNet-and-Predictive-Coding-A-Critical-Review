@@ -161,8 +161,9 @@ def plot_errors(error_outputs, X_test, ind=0):
 
 def plot_changes_in_r(X_hats, ind, std_param=0.5):
     '''
-    funtion used to produce the R plots in the evaluation mode in the pipeline
+    funtion used to produce the values needed for R plots in the evaluation mode in the pipeline
     '''
+    results = []
     vid = [(x_hat[0][ind], x_hat[1]) for x_hat in X_hats]
     frames = defaultdict(lambda : defaultdict(float))
      
@@ -170,17 +171,13 @@ def plot_changes_in_r(X_hats, ind, std_param=0.5):
         for ind, frame in enumerate(vid[channel][0]):   
             frames[channel][ind] = (np.average(np.abs(frame)), np.std(np.abs(frame)))
         
-        
+        results.append([])        
         y = [tup[0] for tup in frames[channel].values()]
         x = [n for n in range(len(y))]
         std = [tup[1] for tup in frames[channel].values()]
-        
-        plt.fill_between(x, [(val-std_param*dev) for val,dev in zip(y,std)], 
-                             [(val+std_param*dev) for val,dev in zip(y,std)],
-                            alpha=0.1)
-        plt.xticks([n for n in range(len(y))])
-        plt.grid(True)
-        plt.plot(x, y)
+        results[channel].append((y, x, std))
+          
+    return results
 
 
 
