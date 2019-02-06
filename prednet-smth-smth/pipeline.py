@@ -43,6 +43,9 @@ from prednet import PredNet
 ########################################## Setting up the Parser #######################################################
 parser = argparse.ArgumentParser(description="Prednet Pipeline")
 
+parser.add_argument('--csv_path', type=str,
+                    default="/data/videos/something-something-v2/preprocessed/data.csv")
+
 parser.add_argument("--preprocess_data_flag", default=False, action="store_true", help="Perform pre-processing")
 parser.add_argument("--train_model_flag", default=False, action="store_true", help="Train the model")
 parser.add_argument("--evaluate_model_flag", default=False, action="store_true", help="Evaluate the model")
@@ -58,27 +61,30 @@ parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), 
 parser.add_argument('--result_dir', type=str, default=os.path.join(os.getcwd(), "results"),
                     help="Directory for saving the results")
 parser.add_argument("--nb_epochs", type=int, default=150, help="Number of epochs")
-parser.add_argument("--train_batch_size", type=int, default=32, help="Train batch size")
-parser.add_argument("--test_batch_size", type=int, default=32, help="Test batch size")
+parser.add_argument("--batch_size", type=int, default=32, help="batch size to use for training, testing and validation")
 parser.add_argument("--n_channels", type=int, default=3, help="number of channels - RGB")
 parser.add_argument("--n_chan_layer", type=list, default=[48, 96, 192], help="number of channels for layer 1,2,3 and so "
                                                                            "on depending upon the length of the list.")
 parser.add_argument("--layer_loss", type=list, default=[1., 0., 0., 0.], help='Weightage of each layer in final loss.')
 parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
 parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
+parser.add_argument("--lr_reduce_epoch", type=int, default=200,
+                    help="the epoch after which the learning rate is reduced from 0.001 to 0.0001"
+                         "By default the whole val_data is used.")
+parser.add_argument("--horizontal_flip", default=False, action="store_true", help="Perform horizontal flipping when training")
 parser.add_argument("--samples_per_epoch", type=int, default=None,
                     help="defines the number of samples that are considered as one epoch during training. "
                          "By default it is len(train_data).")
 parser.add_argument("--samples_per_epoch_val", type=int, default=None,
                     help="defines the number of samples from val_data to use for validation. "
                          "By default the whole val_data is used.")
-parser.add_argument("--samples_per_epoch_test", type=int, default=None,
+parser.add_argument("--samples_test", type=int, default=None,
                     help="defines the number of samples from test_data to use for Testing. "
                          "By default the whole test_data is used in the evaluation phase.")
 parser.add_argument("--model_checkpoint", type=int, default=None,
                     help="Saves model after mentioned amount of epochs. If not mentioned, "
                          "saves the best model on val dataset")
-parser.add_argument("--early_stopping", type=bool, default=True,
+parser.add_argument("--early_stopping", default=False, action="store_true",
                     help="enable early-stopping when training")
 parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
@@ -104,14 +110,6 @@ parser.add_argument("--r_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="R_
 parser.add_argument("--frame_selection", type=str, default="smth-smth-baseline-method",
                     help="n frame selection method for sequence generator")
 
-# arguments needed when preprocess_data_flag is True
-parser.add_argument('--data_dir', type=str, help="Data directory",
-                    default="/data/videos/something-something-v2")
-parser.add_argument('--dest_dir', type=str, help="Destination directory",
-                    default="/data/videos/something-something-v2/preprocessed")
-parser.add_argument("--multithread_off", help="switch off multithread operation. By default it is on",
-                    action="store_true")
-parser.add_argument("--fps_dir", type=str, default=None, help="Frame per seconds directory")
 
 # Extrapolation attributes
 parser.add_argument('--extrap_start_time', type=int, default=None,
@@ -121,7 +119,6 @@ parser.add_argument('--extrap_start_time', type=int, default=None,
 
 args = parser.parse_args()
 ########################################################################################################################
-
 
 ############################################# Common globals for all modes #############################################
 json_file = os.path.join(args.weight_dir, 'model.json')
@@ -139,69 +136,9 @@ else:
     time_steps = args.nframes
 ########################################################################################################################
 
-
-######################################### Preprocessing data ###########################################################
-# Turn on the argument in parser as True in preprocess_data_flag to perform pre-processing of data.
-if args.preprocess_data_flag:
-    print("###################################### Pre-processing data ################################################")
-
-    # Validating directories.
-    assert os.path.isdir(args.data_dir)
-    assert os.path.isdir(args.dest_dir)
-
-    # Splitting data into train, test, and val dataset.
-    split_data(args.data_dir)
-
-    if args.fps_dir is not None:
-        # create a new folder for the fps and append it to the dest_dir
-        os.system("mkdir -p {}/fps{}".format(args.dest_dir, args.fps_dir))
-        args.dest_dir = os.path.join(args.dest_dir, "fps", args.fps_dir)
-
-    # Divide data into train, test and val splits
-    os.system("mkdir -p {}/train".format(args.dest_dir))
-    os.system("mkdir -p {}/test".format(args.dest_dir))
-    os.system("mkdir -p {}/val".format(args.dest_dir))
-
-    # Extracting the videos to frames
-    videos = [
-        video for video in glob.glob(args.data_dir + "/*/*") if not os.path.isfile(
-            "{}/{}/{}/image-001.png".format(
-                args.dest_dir, video.split("/")[-2], video.split("/")[-1].split(".")[0]
-            )
-        )
-    ]
-
-    if not (args.multithread_off):
-        # split the videos into sets of 10000 videos and create a thread for each
-        videos_list = list(_chunks(videos, 10000))
-        print("starting {} parallel threads..".format(len(videos_list)))
-
-        # fix the dest_dir and fps parameter before starting parallel processing
-        extract_videos_1 = partial(extract_videos, dest_dir=args.dest_dir, fps=args.fps)
-        pool = Pool(processes=len(videos_list))
-        pool.map(extract_videos_1, videos_list)
-
-    else:
-        extract_videos(videos)
-
-    # step2 - define frames-resize categories in a pandas df (details in dataset_smthsmth_analysis.ipynb)
-    videos = [vid for vid in glob.glob(args.dest_dir + "/*/*")]
-    df = create_dataframe(videos, os.path.abspath(os.path.join(args.data_dir, "..")))
-    # step3 - randomly set 20k videos as holdout from the train 'split'
-    train_idxs = df[df.split == 'train'].index
-    holdout_idxs = np.random.choice(train_idxs, size=20000, replace=False)
-    df.loc[holdout_idxs, 'split'] = 'holdout'
-    df.to_csv(args.dest_dir + "/data.csv", index=False)
-    print("\n")
-
-else:
-    pass
-########################################################################################################################
-
-
 ############################################### Loading data ###########################################################
-data_csv = os.path.join(args.dest_dir, "data.csv")
-df = pd.read_csv(os.path.join(args.dest_dir, "data.csv"), low_memory=False)
+
+df = pd.read_csv(os.path.join(args.csv_path), low_memory=False)
 train_data = df[df.split == 'train']
 val_data = df[df.split == 'val']
 test_data = df[df.split == 'holdout']
@@ -262,7 +199,8 @@ if args.train_model_flag:
                                                 , nframes=args.nframes
                                                 , fps=args.fps
                                                 , target_im_size=(args.im_height, args.im_width)
-                                                , batch_size=args.train_batch_size
+                                                , batch_size=args.batch_size
+                                                , horizontal_flip=args.horizontal_flip
                                                 , shuffle=True, seed=args.seed
                                                 , nframes_selection_mode=args.frame_selection
                                                 )
@@ -271,26 +209,29 @@ if args.train_model_flag:
                                               , nframes=args.nframes
                                               , fps=args.fps
                                               , target_im_size=(args.im_height, args.im_width)
-                                              , batch_size=args.train_batch_size
+                                              , batch_size=args.batch_size
+                                              , horizontal_flip=False
                                               , shuffle=True, seed=args.seed
                                               , nframes_selection_mode=args.frame_selection
                                               )
-
+    
     # start with lr of 0.001 and then drop to 0.0001 after 75 epochs
-    lr_schedule = lambda epoch: 0.001 if epoch < 75 else 0.0001
+    lr_schedule = lambda epoch: 0.001 if epoch < args.lr_reduce_epoch else 0.0001
     callbacks = [LearningRateScheduler(lr_schedule)]
 
     # Model checkpoint callback
     if args.model_checkpoint is None:
         period = 1
         weights_file = os.path.join(args.weight_dir, 'checkpoint-best.hdf5')  # where weights will be saved
+        save_best_only = True
     else:
         assert args.model_checkpoint <= args.nb_epochs, "'model_checkpoint' arg must be less than 'nb_epochs' arg"
         period = args.model_checkpoint
         weights_file = os.path.join(args.weight_dir, "checkpoint-{epoch:02d}-loss{val_loss:.5f}.hdf5")
+        save_best_only = False
 
     callbacks.append(ModelCheckpoint(filepath=weights_file, monitor='val_loss', verbose=1,
-                                     save_best_only=True, save_weights_only=False,
+                                     save_best_only=save_best_only, save_weights_only=False,
                                      mode='auto', period=period))
 
     # Early stopping callback
@@ -300,12 +241,12 @@ if args.train_model_flag:
                           mode='auto'))
 
     if (args.samples_per_epoch):
-        steps_per_epoch = args.samples_per_epoch // args.train_batch_size
+        steps_per_epoch = args.samples_per_epoch // args.batch_size
     else:
         steps_per_epoch = len(train_generator)
 
     if (args.samples_per_epoch_val):
-        steps_per_epoch_val = args.samples_per_epoch_val // args.train_batch_size
+        steps_per_epoch_val = args.samples_per_epoch_val // args.batch_size
     else:
         steps_per_epoch_val = len(val_generator)
 
@@ -316,12 +257,13 @@ if args.train_model_flag:
     with open(json_file, "w") as f:
         f.write(json_string)
 
-    history = model.fit_generator(train_generator,
-                                  steps_per_epoch=steps_per_epoch,
-                                  epochs=args.nb_epochs,
-                                  callbacks=callbacks,
-                                  validation_data=val_generator,
-                                  validation_steps=steps_per_epoch_val)
+    history = model.fit_generator(train_generator
+                                  , steps_per_epoch=steps_per_epoch
+                                  , epochs=args.nb_epochs
+                                  , callbacks=callbacks                                
+                                  , validation_data=val_generator
+                                  , validation_steps=steps_per_epoch_val
+                                 )
 
     # save training history to a file
     with open(history_file, 'w') as f:
@@ -399,7 +341,8 @@ if args.finetune_extrapolate_model_flag:
                                                 , nframes=args.nframes
                                                 , fps=args.fps
                                                 , target_im_size=(args.im_height, args.im_width)
-                                                , batch_size=args.train_batch_size
+                                                , batch_size=args.batch_size
+                                                , horizontal_flip=args.horizontal_flip
                                                 , shuffle=True, seed=args.seed
                                                 , nframes_selection_mode=args.frame_selection
                                                 , output_mode="prediction"
@@ -409,15 +352,17 @@ if args.finetune_extrapolate_model_flag:
                                               , nframes=args.nframes
                                               , fps=args.fps
                                               , target_im_size=(args.im_height, args.im_width)
-                                              , batch_size=args.train_batch_size
+                                              , batch_size=args.batch_size                                              
+                                              , horizontal_flip=args.horizontal_flip
                                               , shuffle=True, seed=args.seed
                                               , nframes_selection_mode=args.frame_selection
                                               , output_mode='prediction'
                                               )
 
     # start with lr of 0.001 and then drop to 0.0001 after half number of epochs
-    lr_schedule = lambda epoch: 0.001 if epoch < 75 else 0.0001
-    callbacks = [LearningRateScheduler(lr_schedule)]
+#     lr_schedule = lambda epoch: 0.001 if epoch < args.lr_reduce_epoch else 0.0001
+#     callbacks = [LearningRateScheduler(lr_schedule)]
+    callbacks = []
 
     # where weights will be saved
     extrap_weights_file = os.path.join(args.weight_dir, filename + '-extrapolate.hdf5')
@@ -425,12 +370,12 @@ if args.finetune_extrapolate_model_flag:
                                      save_best_only=True))
 
     if (args.samples_per_epoch):
-        steps_per_epoch = args.samples_per_epoch // args.train_batch_size
+        steps_per_epoch = args.samples_per_epoch // args.batch_size
     else:
         steps_per_epoch = len(train_generator)
 
     if (args.samples_per_epoch_val):
-        steps_per_epoch_val = args.samples_per_epoch_val // args.train_batch_size
+        steps_per_epoch_val = args.samples_per_epoch_val // args.batch_size
     else:
         steps_per_epoch_val = len(val_generator)
 
@@ -450,6 +395,8 @@ if args.finetune_extrapolate_model_flag:
 if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
 
+    if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
+            
     for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
         # Load trained model
@@ -474,24 +421,25 @@ if args.evaluate_model_flag:
                                                    , nframes=args.nframes
                                                    , fps=args.fps
                                                    , target_im_size=(args.im_height, args.im_width)
-                                                   , batch_size=args.test_batch_size
+                                                   , batch_size=args.batch_size
+                                                   , horizontal_flip=False
                                                    , shuffle=True, seed=args.seed
                                                    , nframes_selection_mode=args.frame_selection
                                                    )
 
-        if (args.samples_per_epoch_test):
-            steps_per_epoch_test = args.samples_per_epoch_test // args.test_batch_size
+        if (args.samples_test):
+            max_test_batches = args.samples_test // args.batch_size
         else:
-            steps_per_epoch_test = len(test_generator)
+            max_test_batches = len(test_generator)
 
         mse_model_list, mse_prev_list = ([] for i in range(2))
         for index, data in enumerate(test_generator):
-            # Only consider steps_per_epoch_test number of steps
-            if index > steps_per_epoch_test:
+            # Only consider steps_test number of steps
+            if index > max_test_batches:
                 break
             # X_test = test_generator.next()[0]
             X_test = data[0]
-            X_hat = test_model.predict(X_test, args.test_batch_size)
+            X_hat = test_model.predict(X_test, args.batch_size)
             if data_format == 'channels_first':
                 X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
                 X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
@@ -506,7 +454,6 @@ if args.evaluate_model_flag:
         mse_prev = np.mean(mse_prev_list)
         std_prev = np.std(mse_prev_list)
        
-        if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
         f = open(os.path.join(args.result_dir, 'prediction_scores_' + filename + '.txt'), 'w')
         f.write("Model MSE: {:.4f}+-{:.4f}\n".format(mse_model, std_model))
         f.write("Previous Frame MSE: {:.4f}+-{:.4f}\n".format(mse_prev, std_prev))
@@ -530,8 +477,8 @@ if args.evaluate_model_flag:
             ("1b_infreq_putting", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
             ("2a_hand_motion_showing", ["Showing [something] to the camera"]),
             ("2b_hand_motion_digging", ["Digging [something] out of [something]"]),
-            ("3a_throwing_object1", ["Throwing [something]"]),
-            ("3b_throwing_object2", ["Throwing [something]"]),
+            ("3a_throwing_object1_", ["Throwing [something]"]),
+            ("3b_throwing_object2_", ["Throwing [something]"]),
             ("4a_camera_motion", ["Turning the camera left while filming [something]",
                                   "Turning the camera downwards while filming [something]",
                                   "Approaching [something] with your camera"]),

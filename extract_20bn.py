@@ -156,13 +156,14 @@ python3 extract_20bn.py  /data/videos/something-something-v2/raw /data/videos/so
     os.system("mkdir -p {}/val".format(args.dest_dir))  
     
     #step 1 - extract the videos to frames (details in dataset_smthsmth_analysis.ipynb)
-    videos = [
-        v for v in glob.glob(args.data_dir+"/*/*") if not os.path.isfile(
-        "{}/{}/{}/image-001.png".format(
-            args.dest_dir, v.split("/")[-2], v.split("/")[-1].split(".")[0]
-                                        )
-        )
-             ]
+    videos = glob.glob(args.data_dir+"/*/*")
+#     videos = [
+#         v for v in glob.glob(args.data_dir+"/*/*") if not os.path.isfile(
+#         "{}/{}/{}/image-001.png".format(
+#             args.dest_dir, v.split("/")[-2], v.split("/")[-1].split(".")[0]
+#                                         )
+#         )
+#              ]
     if not (args.multithread_off):
         
         #split the videos into sets of 10000 videos and create a thread for each
