@@ -223,15 +223,13 @@ if args.train_model_flag:
     if args.model_checkpoint is None:
         period = 1
         weights_file = os.path.join(args.weight_dir, 'checkpoint-best.hdf5')  # where weights will be saved
-        save_best_only = True
     else:
         assert args.model_checkpoint <= args.nb_epochs, "'model_checkpoint' arg must be less than 'nb_epochs' arg"
         period = args.model_checkpoint
         weights_file = os.path.join(args.weight_dir, "checkpoint-{epoch:02d}-loss{val_loss:.5f}.hdf5")
-        save_best_only = False
 
     callbacks.append(ModelCheckpoint(filepath=weights_file, monitor='val_loss', verbose=1,
-                                     save_best_only=save_best_only, save_weights_only=False,
+                                     save_best_only=True, save_weights_only=False,
                                      mode='auto', period=period))
 
     # Early stopping callback
@@ -475,21 +473,21 @@ if args.evaluate_model_flag:
         sub_grps = [  # tuples containing (grp_name, templates)
             ("1a_freq_putting", ["Putting [something] on a surface"]),
             ("1b_infreq_putting", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
-            ("2a_hand_motion_showing", ["Showing [something] to the camera"]),
+            ("2a_no_hand_motion_showing", ["Showing [something] to the camera"]),
             ("2b_hand_motion_digging", ["Digging [something] out of [something]"]),
             ("3a_throwing_object1_", ["Throwing [something]"]),
             ("3b_throwing_object2_", ["Throwing [something]"]),
             ("4a_camera_motion", ["Turning the camera left while filming [something]",
                                   "Turning the camera downwards while filming [something]",
                                   "Approaching [something] with your camera"]),
-            ("4b_no_camera_motion", ["Folding [something]", "Unfolding [something]"])
+            ("4b_no_camera_motion_folding", ["Folding [something]", "Unfolding [something]"])
         ]
 
         total_vids_to_plt = args.plots_per_grp * len(sub_grps)
         total_grps = len(sub_grps)
 
 
-        # sample one video from each sub-group
+        # sample 'plots_per_grp' videos from each sub-group
         test_data_for_plt = pd.DataFrame()
         for name, lbls in sub_grps:
             test_data_for_plt = test_data_for_plt.append(
@@ -557,6 +555,9 @@ if args.evaluate_model_flag:
             else:
                 fig, ax = plt.subplots(ncols=1, nrows=2, sharex=True, figsize=(time_steps, 2 * aspect_ratio))
 
+            # set the title of the plot as the label and the video ID for reference
+            fig.suptitle("ID {}: {}".format(test_data_for_plt.loc[i,'id'], test_data_for_plt.loc[i,'label']))
+
             #Plot video
             ax[0].imshow(np.concatenate([t for t in X_test[i]], axis=1), interpolation='none', aspect="auto")
             ax[0].tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
@@ -565,7 +566,7 @@ if args.evaluate_model_flag:
             ax[0].set_xlim(0,time_steps*args.im_width)
             
             #Plot predictions
-            ax[1].imshow(np.concatenate([t for t in X_test[i]], axis=1), interpolation='none', aspect="auto")
+            ax[1].imshow(np.concatenate([t for t in X_hat[i]], axis=1), interpolation='none', aspect="auto")
             ax[1].tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                             labelbottom=False, labelleft=False)
             ax[1].set_ylabel(r'Prediction', fontsize=10)
