@@ -1,3 +1,4 @@
+
 ######################################### Importing libraries ##########################################################
 import os
 import sys
@@ -23,7 +24,6 @@ from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping
 
 import tensorflow as tf
-
 tf.logging.set_verbosity(tf.logging.ERROR)
 
 import matplotlib
@@ -69,8 +69,10 @@ parser.add_argument("--n_chan_layer", type=list, default=[48, 96, 192], help="nu
 parser.add_argument("--layer_loss", type=list, default=[1., 0., 0., 0.], help='Weightage of each layer in final loss.')
 parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
 parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
+parser.add_argument("--lr", type=float, default=0.001,
+                    help="the learning rate during training.")
 parser.add_argument("--lr_reduce_epoch", type=int, default=200,
-                    help="the epoch after which the learning rate is reduced from 0.001 to 0.0001"
+                    help="the epoch after which the learning rate is devided by 10"
                          "By default the whole val_data is used.")
 parser.add_argument("--horizontal_flip", default=False, action="store_true", help="Perform horizontal flipping when training")
 parser.add_argument("--samples_per_epoch", type=int, default=None,
@@ -135,6 +137,8 @@ if (args.nframes is None):
     time_steps = fps_to_nframes[args.fps]
 else:
     time_steps = args.nframes
+
+assert args.plots_per_grp > 0, "plots_per_grp cannot be 0 or negative."
 ########################################################################################################################
 
 ############################################### Loading data ###########################################################
@@ -217,7 +221,7 @@ if args.train_model_flag:
                                               )
     
     # start with lr of 0.001 and then drop to 0.0001 after 75 epochs
-    lr_schedule = lambda epoch: 0.001 if epoch < args.lr_reduce_epoch else 0.0001
+    lr_schedule = lambda epoch: args.lr if epoch < args.lr_reduce_epoch else args.lr/10
     callbacks = [LearningRateScheduler(lr_schedule)]
 
     # Model checkpoint callback
@@ -227,7 +231,7 @@ if args.train_model_flag:
     else:
         assert args.model_checkpoint <= args.nb_epochs, "'model_checkpoint' arg must be less than 'nb_epochs' arg"
         period = args.model_checkpoint
-        weights_file = os.path.join(args.weight_dir, "checkpoint-{epoch:02d}-loss{val_loss:.5f}.hdf5")
+        weights_file = os.path.join(args.weight_dir, "checkpoint-{epoch:03d}-loss{val_loss:.5f}.hdf5")
 
     callbacks.append(ModelCheckpoint(filepath=weights_file, monitor='val_loss', verbose=1,
                                      save_best_only=True, save_weights_only=False,
@@ -266,7 +270,7 @@ if args.train_model_flag:
 
     # save training history to a file
     with open(history_file, 'w') as f:
-        json.dump(history.history, f)
+        json.dump(history.history, f, sort_keys=True,  indent=4)
 
     plot_loss_curves(history, "MSE", "Prednet", args.weight_dir)
 
@@ -448,15 +452,16 @@ if args.evaluate_model_flag:
                 np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
             mse_prev_list.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))
 
-        mse_model = np.mean(mse_model_list)
-        std_model = np.std(mse_model_list)
-        mse_prev = np.mean(mse_prev_list)
-        std_prev = np.std(mse_prev_list)
-       
-        f = open(os.path.join(args.result_dir, 'prediction_scores_' + filename + '.txt'), 'w')
-        f.write("Model MSE: {:.4f}+-{:.4f}\n".format(mse_model, std_model))
-        f.write("Previous Frame MSE: {:.4f}+-{:.4f}\n".format(mse_prev, std_prev))
-        f.close()
+        # save in a dict and limit the size of float decimals to max 6
+        results_dict = {
+        "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
+        "MSE_std":float(("{:.6f}".format(np.std(mse_model_list)))), 
+        "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_prev_list))), 
+        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_prev_list)))
+        }
+
+        with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
+            json.dump(results_dict, f, sort_keys=True,  indent=4)
 
             # Select specific sub-groups of the data to plot predictions
         # 1) group 1 - varying freq of labels in dataset
@@ -472,16 +477,16 @@ if args.evaluate_model_flag:
         #   a) turning camera / moving camera closer
         #   b) folding / unfolding
         sub_grps = [  # tuples containing (grp_name, templates)
-            ("1a_freq_putting", ["Putting [something] on a surface"]),
-            ("1b_infreq_putting", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
-            ("2a_no_hand_motion_showing", ["Showing [something] to the camera"]),
-            ("2b_hand_motion_digging", ["Digging [something] out of [something]"]),
+            ("1a_freq_putting_", ["Putting [something] on a surface"]),
+            ("1b_infreq_putting_", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
+            ("2a_no_hand_motion_showing_", ["Showing [something] to the camera"]),
+            ("2b_hand_motion_digging_", ["Digging [something] out of [something]"]),
             ("3a_throwing_object1_", ["Throwing [something]"]),
             ("3b_throwing_object2_", ["Throwing [something]"]),
-            ("4a_camera_motion", ["Turning the camera left while filming [something]",
-                                 "Turning the camera downwards while filming [something]",
+            ("4a_camera_motion_", ["Turning the camera left while filming [something]",
+                                  "Turning the camera downwards while filming [something]",
                                   "Approaching [something] with your camera"]),
-            ("4b_no_camera_motion_folding", ["Folding [something]", "Unfolding [something]"])
+            ("4b_no_camera_motion_folding_", ["Folding [something]", "Unfolding [something]"])
         ]
 
         total_vids_to_plt = args.plots_per_grp * len(sub_grps)
@@ -595,6 +600,44 @@ if args.evaluate_model_flag:
             ######################################### Extra plot #############################################
             if args.extra_plots_flag:
 
+               #Create values for R plots      
+                results = plot_changes_in_r(R_X_hats, i, std_param=args.std_param)
+                ax = divider.append_axes("bottom", size="300%", pad=0.2)                                                                
+                #Plot R plots
+                for layer in results:
+                    (y,x,std) = layer[0]
+                    x = [args.im_width/2+item*args.im_width for item in x]
+                    ax.fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
+                                     [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
+                    ax.plot(x, y)
+                
+                ax.set_xlim(0,time_steps*args.im_width)
+                ax.set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
+                ax.set_xticklabels(np.arange(1,time_steps+1))
+                ax.grid(True)                  
+                ax.set_ylabel(r"Mean R activations", fontsize=10)
+                ax.xaxis.set_label_position('top') 
+                ax.legend(['R0','R1','R2','R3'])
+                
+                #Create values for E plots      
+                results = plot_changes_in_r(error_X_hats, i, std_param=args.std_param)
+                ax = divider.append_axes("bottom", size="300%", pad=0.2)                                                                
+                #Plot E plots
+                for layer in results:
+                    (y,x,std) = layer[0]
+                    x = [args.im_width/2+item*args.im_width for item in x]
+                    ax.fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
+                                    [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
+                    ax.plot(x, y)
+                    
+                ax.set_xlim(0,time_steps*args.im_width)
+                ax.set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
+                ax.set_xticklabels(np.arange(1,time_steps+1))
+                ax.grid(True)                  
+                ax.set_ylabel(r"Mean E activations", fontsize=10)
+                ax.xaxis.set_label_position('top') 
+                ax.legend(['E0','E1','E2','E3'])
+
                 #Create error output matrices to plot inside the next loop
                 R_matrices = plot_errors(R_X_hats, X_test, ind=i)
                 A_matrices =  plot_errors(A_X_hats, X_test, ind=i) 
@@ -635,52 +678,12 @@ if args.evaluate_model_flag:
                         ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
                                                 right=False, labelbottom=False, labelleft=False)
                         ax.set_ylabel(r"E" + str(layer), fontsize=10)
-                        ax.set_xlim(0,time_steps*args.im_width)
-
-                                                
-                #Create values for R plots      
-                results = plot_changes_in_r(R_X_hats, i, std_param=args.std_param)
-                ax = divider.append_axes("bottom", size="300%", pad=0.2)                                                                
-                #Plot R plots
-                for layer in results:
-                    (y,x,std) = layer[0]
-                    x = [args.im_width/2+item*args.im_width for item in x]
-                    ax.fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
-                                     [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
-                    ax.plot(x, y)
-                
-                ax.set_xlim(0,time_steps*args.im_width)
-                ax.set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
-                ax.set_xticklabels(np.arange(1,time_steps+1))
-                ax.grid(True)                  
-                ax.set_ylabel(r"Mean R activations", fontsize=10)
-                ax.xaxis.set_label_position('top') 
-                ax.legend(['R0','R1','R2','R3'])
-                
-                #Create values for E plots      
-                results = plot_changes_in_r(error_X_hats, i, std_param=args.std_param)
-                ax = divider.append_axes("bottom", size="300%", pad=0.2)                                                                
-                #Plot E plots
-                for layer in results:
-                    (y,x,std) = layer[0]
-                    x = [args.im_width/2+item*args.im_width for item in x]
-                    ax.fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
-                                    [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
-                    ax.plot(x, y)
-                    
-                ax.set_xlim(0,time_steps*args.im_width)
-                ax.set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
-                ax.set_xticklabels(np.arange(1,time_steps+1))
-                ax.grid(True)                  
-                ax.set_ylabel(r"Mean E activations", fontsize=10)
-                ax.xaxis.set_label_position('top') 
-                ax.legend(['E0','E1','E2','E3'])
-                        #####################################################################################################################
+                        ax.set_xlim(0,time_steps*args.im_width)                
+            #####################################################################################################################
                 
             grp_i = i // args.plots_per_grp
-            sub_grp_i = i % args.plots_per_grp
             plt.subplots_adjust(hspace=0., wspace=0., top=0.97)
-            plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')
+            plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(test_data_for_plt.loc[i,'id']) + '.png')
             plt.clf()
 
 else:

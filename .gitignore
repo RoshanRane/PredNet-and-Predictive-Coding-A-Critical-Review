@@ -1,2 +1,7 @@
 .ipynb_checkpoints
 *__pycache__*
+prednet-smth-smth/backup_scripts/
+prednet-smth-smth/data_utils.ipynb
+prednet-smth-smth/model_*/
+prednet-smth-smth/nohup*
+prednet-smth-smth/results_*
