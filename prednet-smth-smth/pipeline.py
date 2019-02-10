@@ -31,6 +31,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Custom imports
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
@@ -478,7 +479,7 @@ if args.evaluate_model_flag:
             ("3a_throwing_object1_", ["Throwing [something]"]),
             ("3b_throwing_object2_", ["Throwing [something]"]),
             ("4a_camera_motion", ["Turning the camera left while filming [something]",
-                                  "Turning the camera downwards while filming [something]",
+                                 "Turning the camera downwards while filming [something]",
                                   "Approaching [something] with your camera"]),
             ("4b_no_camera_motion_folding", ["Folding [something]", "Unfolding [something]"])
         ]
@@ -494,6 +495,7 @@ if args.evaluate_model_flag:
                 test_data[test_data.template.isin(lbls)].sample(n=args.plots_per_grp,
                                                                 random_state=args.seed)
                 , ignore_index=True)
+            
 
         X_test = SmthSmthSequenceGenerator(test_data_for_plt
                                            , nframes=args.nframes
@@ -512,7 +514,8 @@ if args.evaluate_model_flag:
             
             #Create models for error and R plots
             extra_test_models = []
-            extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'R0', 'R1', 'R2', 'R3']
+            extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'A0', 'A1', 'A2', 'A3', 
+                                  'Ahat0', 'Ahat1', 'Ahat2', 'Ahat3', 'R0', 'R1', 'R2', 'R3']
             for output_mode in extra_output_modes:
                 layer_config['output_mode'] = output_mode    
                 data_format = (layer_config['data_format'] if 'data_format' in layer_config 
@@ -537,6 +540,18 @@ if args.evaluate_model_flag:
                 if output_mode[0]=='R':
                     R_X_hat = test_model.predict(X_test, total_grps) 
                     R_X_hats.append((R_X_hat, output_mode))
+                    
+            A_X_hats = []
+            Ahat_X_hats = []
+            for test_model, output_mode in extra_test_models:
+                if output_mode[0]=='A':
+                    if output_mode[1]!='h':
+                        A_X_hat = test_model.predict(X_test, total_grps) 
+                        A_X_hats.append((A_X_hat, output_mode))
+                    else:
+                        Ahat_X_hat = test_model.predict(X_test, total_grps) 
+                        Ahat_X_hats.append((Ahat_X_hat, output_mode))
+                        
 
         
         ######################################################################################################################
@@ -550,8 +565,10 @@ if args.evaluate_model_flag:
         for i in range(total_vids_to_plt):
             
             if args.extra_plots_flag:
-                fig, ax = plt.subplots(ncols=1, nrows=7, sharex=True, figsize=(time_steps, 9 * aspect_ratio), 
-                                       gridspec_kw={'height_ratios':[1,1,1,1,1,1,3]})
+                fig, ax = plt.subplots(ncols=1, nrows=20, sharex=True, figsize=(time_steps, 25 * aspect_ratio),
+                                      gridspec_kw={'height_ratios':[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3]})
+                
+                
             else:
                 fig, ax = plt.subplots(ncols=1, nrows=2, sharex=True, figsize=(time_steps, 2 * aspect_ratio))
 
@@ -559,59 +576,112 @@ if args.evaluate_model_flag:
             fig.suptitle("ID {}: {}".format(test_data_for_plt.loc[i,'id'], test_data_for_plt.loc[i,'label']))
 
             #Plot video
-            ax[0].imshow(np.concatenate([t for t in X_test[i]], axis=1), interpolation='none', aspect="auto")
-            ax[0].tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+            ax = plt.subplot()
+            ax.imshow(np.concatenate([t for t in X_test[i]], axis=1), interpolation='none', aspect="auto")
+            ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                             labelbottom=False, labelleft=False)
-            ax[0].set_ylabel(r'Actual', fontsize=10)
-            ax[0].set_xlim(0,time_steps*args.im_width)
+            ax.set_ylabel(r'Actual', fontsize=10)
+            ax.set_xlim(0,time_steps*args.im_width)
             
             #Plot predictions
-            ax[1].imshow(np.concatenate([t for t in X_hat[i]], axis=1), interpolation='none', aspect="auto")
-            ax[1].tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
+            divider = make_axes_locatable(ax)
+            ax = divider.append_axes("bottom", size="100%", pad=0.0)                                             
+            ax.imshow(np.concatenate([t for t in X_hat[i]], axis=1), interpolation='none', aspect="auto")
+            ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False,
                                             labelbottom=False, labelleft=False)
-            ax[1].set_ylabel(r'Prediction', fontsize=10)
-            ax[1].set_xlim(0,time_steps*args.im_width)
-
-
+            ax.set_ylabel(r'Prediction', fontsize=10)
+            ax.set_xlim(0,time_steps*args.im_width)
+      
             ######################################### Extra plot #############################################
             if args.extra_plots_flag:
 
                 #Create error output matrices to plot inside the next loop
+                R_matrices = plot_errors(R_X_hats, X_test, ind=i)
+                A_matrices =  plot_errors(A_X_hats, X_test, ind=i) 
+                Ahat_matrices = plot_errors(Ahat_X_hats, X_test, ind=i)
                 error_matrices = plot_errors(error_X_hats, X_test, ind=i)
-                #Plot errors
-                for layer in range(len(error_matrices)):                                   
-                        ax[layer+2].imshow(np.concatenate([t for t in error_matrices[layer]], axis=1), 
+                #Plot R, A, Ahat and errors for each layer
+                for layer in range(len(error_matrices)):   
+                        ##R
+                        ax = divider.append_axes("bottom", size="100%", pad=0.2)                                             
+                        ax.imshow(np.concatenate([t for t in R_matrices[layer]], axis=1), 
                                            interpolation='nearest', cmap='gray', aspect="auto")
-                        ax[layer+2].tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
+                        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
                                                 right=False, labelbottom=False, labelleft=False)
-                        ax[layer+2].set_ylabel(r"E" + str(layer), fontsize=10)
-                        ax[layer+2].set_xlim(0,time_steps*args.im_width)
+                        ax.set_ylabel(r"R" + str(layer), fontsize=10)
+                        ax.set_xlabel(r"Layer " + str(layer), fontsize=10)
+                        ax.xaxis.set_label_position('top') 
+                        ax.set_xlim(0,time_steps*args.im_width)
+                        ##A
+                        ax = divider.append_axes("bottom", size="100%", pad=0.0)                                             
+                        ax.imshow(np.concatenate([t for t in Ahat_matrices[layer]], axis=1), 
+                                           interpolation='nearest', cmap='gray', aspect="auto")
+                        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
+                                                right=False, labelbottom=False, labelleft=False)
+                        ax.set_ylabel(r"Ahat" + str(layer), fontsize=10)
+                        ax.set_xlim(0,time_steps*args.im_width)
+                        ##Ahat
+                        ax = divider.append_axes("bottom", size="100%", pad=0.0)                                     
+                        ax.imshow(np.concatenate([t for t in A_matrices[layer]], axis=1), 
+                                           interpolation='nearest', cmap='gray', aspect="auto")
+                        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
+                                                right=False, labelbottom=False, labelleft=False)
+                        ax.set_ylabel(r"A" + str(layer), fontsize=10)
+                        ax.set_xlim(0,time_steps*args.im_width)
+                        ##E
+                        ax = divider.append_axes("bottom", size="100%", pad=0.0)                                             
+                        ax.imshow(np.concatenate([t for t in error_matrices[layer]], axis=1), 
+                                           interpolation='nearest', cmap='gray', aspect="auto")
+                        ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, 
+                                                right=False, labelbottom=False, labelleft=False)
+                        ax.set_ylabel(r"E" + str(layer), fontsize=10)
+                        ax.set_xlim(0,time_steps*args.im_width)
 
                                                 
                 #Create values for R plots      
                 results = plot_changes_in_r(R_X_hats, i, std_param=args.std_param)
+                ax = divider.append_axes("bottom", size="300%", pad=0.2)                                                                
                 #Plot R plots
                 for layer in results:
                     (y,x,std) = layer[0]
                     x = [args.im_width/2+item*args.im_width for item in x]
-                    ax[6].fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
+                    ax.fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
                                      [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
-                    ax[6].plot(x, y)
-                    
-                ax[6].set_xlim(0,time_steps*args.im_width)
-                ax[6].set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
-                ax[6].set_xticklabels(np.arange(1,time_steps+1))
-                ax[6].grid(True)                  
-                ax[6].set_ylabel(r"Mean R activations", fontsize=10)
-                ax[6].legend(['R0','R1','R2','R3'])
+                    ax.plot(x, y)
                 
-        #####################################################################################################################
+                ax.set_xlim(0,time_steps*args.im_width)
+                ax.set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
+                ax.set_xticklabels(np.arange(1,time_steps+1))
+                ax.grid(True)                  
+                ax.set_ylabel(r"Mean R activations", fontsize=10)
+                ax.xaxis.set_label_position('top') 
+                ax.legend(['R0','R1','R2','R3'])
+                
+                #Create values for E plots      
+                results = plot_changes_in_r(error_X_hats, i, std_param=args.std_param)
+                ax = divider.append_axes("bottom", size="300%", pad=0.2)                                                                
+                #Plot E plots
+                for layer in results:
+                    (y,x,std) = layer[0]
+                    x = [args.im_width/2+item*args.im_width for item in x]
+                    ax.fill_between(x, [(val-args.std_param*dev) for val,dev in zip(y,std)], 
+                                    [(val+args.std_param*dev) for val,dev in zip(y,std)], alpha=0.1)
+                    ax.plot(x, y)
+                    
+                ax.set_xlim(0,time_steps*args.im_width)
+                ax.set_xticks(np.arange(args.im_width/2, time_steps*args.im_width, step=args.im_width))                
+                ax.set_xticklabels(np.arange(1,time_steps+1))
+                ax.grid(True)                  
+                ax.set_ylabel(r"Mean E activations", fontsize=10)
+                ax.xaxis.set_label_position('top') 
+                ax.legend(['E0','E1','E2','E3'])
+                        #####################################################################################################################
                 
             grp_i = i // args.plots_per_grp
             sub_grp_i = i % args.plots_per_grp
-            fig.subplots_adjust(hspace=0., wspace=0.)
-            fig.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')
-            fig.clf()
+            plt.subplots_adjust(hspace=0., wspace=0., top=0.97)
+            plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(sub_grp_i) + '.png')
+            plt.clf()
 
 else:
     pass
