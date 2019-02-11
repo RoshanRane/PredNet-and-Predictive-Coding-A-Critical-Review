@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
+from skimage.measure import compare_ssim as ssim
+from skimage.measure import compare_psnr as psnr
 from skimage.transform import rescale
 import sys
 import time
@@ -153,7 +155,7 @@ def plot_errors(error_outputs, X_test, ind=0):
         vid_error = layer_error[ind]
         for frame in vid_error:   
             frame = np.transpose(frame, (2,0,1))
-            frame_matrix =  np.sum([mat for mat in frame], axis=0)
+            frame_matrix =  np.sum([mat for mat in frame], axis=0)/len(frame)
             frame_matrix_rescaled = rescale(frame_matrix, (2**layer, 2**layer))
             matrices[layer].append(frame_matrix_rescaled)              
 
@@ -179,6 +181,45 @@ def plot_changes_in_r(X_hats, ind, std_param=0.5):
           
     return results
 
+def return_difference(X_test, X_hat):
+    '''
+    returns mean SSIM and PSNR for one video
+    '''
+    ssim_list = []
+    psnr_list = [] 
+    for ind in range(1,len(X_test)):#ignore first frame
+        ssim_list.append(ssim(X_test[ind], X_hat[ind], multichannel=True))
+        psnr_list.append(psnr(X_test[ind], X_hat[ind]))
+    return np.mean(ssim_list), np.mean(psnr_list)
+                         
+    
+def return_sharpness_difference(X_test, X_hat):
+    '''
+    return sharpness difference for one video based on Mathieu 2016 
+    '''
+    differences = []
+    
+    for ind, frame in enumerate(X_test): 
+       
+        frame2 = np.transpose(X_hat[ind], (2,0,1))
+        frame = np.transpose(frame, (2,0,1))
+        channel_list = []
+
+        for channel in range(frame.shape[0]):
+            
+            gy, gx = np.gradient(frame[channel])
+            sum1 = np.sum(np.add(np.abs(gy), np.abs(gx)))
+                   
+            gy2, gx2 = np.gradient(frame2[channel])
+            sum2 = np.sum(np.add(np.abs(gy2), np.abs(gx2))) 
+            
+            res = 10 * np.log10((255*255) / ((np.abs(sum1-sum2) / gy.shape[0]*gy.shape[1]*3 )))
+            
+            channel_list.append(res)
+                    
+        differences.append(np.mean(channel_list))
+            
+    return np.mean(differences)
 
 
       

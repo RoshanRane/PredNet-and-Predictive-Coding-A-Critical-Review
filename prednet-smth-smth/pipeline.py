@@ -36,7 +36,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 # Custom imports
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
 from data_utils import SmthSmthSequenceGenerator
-from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r
+from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r, return_difference, return_sharpness_difference
 from prednet import PredNet
 ########################################################################################################################
 
@@ -434,7 +434,12 @@ if args.evaluate_model_flag:
             max_test_batches = args.samples_test // args.batch_size
         else:
             max_test_batches = len(test_generator)
-
+       
+        #initialize lists for evaluation
+        psnr_list = []
+        ssim_list = []
+        sharpness_list = []
+        
         mse_model_list, mse_prev_list = ([] for i in range(2))
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
@@ -446,18 +451,26 @@ if args.evaluate_model_flag:
             if data_format == 'channels_first':
                 X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
                 X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
-
+            
             # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
             mse_model_list.append(
                 np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
             mse_prev_list.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))
+                 
+            ssim_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[0] for ind in range(X_test.shape[0])]))
+            psnr_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[1] for ind in range(X_test.shape[0])]))            
+            sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind], X_hat[ind])
+                                           for ind in range(X_test.shape[0])]))
 
         # save in a dict and limit the size of float decimals to max 6
-        results_dict = {
+        results_dict = {                    
         "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
         "MSE_std":float(("{:.6f}".format(np.std(mse_model_list)))), 
         "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_prev_list))), 
-        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_prev_list)))
+        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_prev_list))),
+        "SSIM_mean": float("{:.6f}".format(np.mean(ssim_list))), 
+        "PRNS_mean": float("{:.6f}".format(np.mean(psnr_list))),
+        "Sharpness_mean": float("{:.6f}".format(np.mean(sharpness_list)))       
         }
 
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
