@@ -162,7 +162,7 @@ print("num of test videos= ", len(test_data))
 
 ############################################ Training model ############################################################
 if args.train_model_flag:
-    print("########################################## Training Model #################################################")
+    print("========================================== Training Model ==========================================")
 
     # create weight directory if it does not exist
     if not os.path.exists(args.weight_dir):
@@ -288,7 +288,7 @@ else:
 
 ########################################### Extrapolate the model ######################################################
 if args.finetune_extrapolate_model_flag:
-    print("###################################### Extrapolating the model ############################################")
+    print("========================================== Extrapolating the model ==========================================")
     # Define loss as MAE of frame predictions after t=0
     # It doesn't make sense to compute loss on error representation, since the error isn't wrt ground truth when
     # extrapolating.
@@ -403,7 +403,7 @@ if args.finetune_extrapolate_model_flag:
 
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
-    print("########################################### Evaluating data ###############################################")
+    print("========================================== Evaluating data ==========================================")
 
     if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
     
@@ -456,11 +456,16 @@ if args.evaluate_model_flag:
             max_test_batches = len(test_generator)
        
         #initialize lists for evaluation
+        mse_list_model = []
+        mse_list_baseline = []        
+        mae_list_model = []
+        mae_list_baseline = []
+        mae_model_list = []
+        mae_prev_list = []
         psnr_list = []
         ssim_list = []
         sharpness_list = []
-        
-        mse_model_list, mse_prev_list = ([] for i in range(2))
+
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
             if index > max_test_batches:
@@ -472,22 +477,28 @@ if args.evaluate_model_flag:
                 X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
                 X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
             
-            # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
-            mse_model_list.append(
-                np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
-            mse_prev_list.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))
-                 
+            # Calculate MSE, MAE, SSIM, PSNR and sharpness_index for PredNet predictions 
+            mse_list_model.append(np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
+            mae_list_model.append(np.mean(np.abs(X_test[:, 1:] - X_hat[:, 1:])))  
             ssim_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[0] for ind in range(X_test.shape[0])]))
             psnr_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[1] for ind in range(X_test.shape[0])]))            
             sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind], X_hat[ind])
                                            for ind in range(X_test.shape[0])]))
+            # Calculate all of the above for previous-frame-copy baseline for comparison
+            mse_list_baseline.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))           
+            mae_list_baseline.append(np.mean(np.abs(X_test[:, :-1] - X_test[:, 1:])))  
+                 
 
         # save in a dict and limit the size of float decimals to max 6
         results_dict = {                    
-        "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
-        "MSE_std":float(("{:.6f}".format(np.std(mse_model_list)))), 
-        "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_prev_list))), 
-        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_prev_list))),
+        "MSE_mean": float("{:.6f}".format(np.mean(mse_list_model))), 
+        "MSE_std":float(("{:.6f}".format(np.std(mse_list_model)))), 
+        "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_list_baseline))), 
+        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_list_baseline))),
+        "MAE_mean": float("{:.6f}".format(np.mean(mae_list_model))), 
+        "MAE_std":float(("{:.6f}".format(np.std(mae_list_model)))), 
+        "MAE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mae_list_baseline))), 
+        "MAE_std_prev_frame_copy":float("{:.6f}".format(np.std(mae_list_baseline))),
         "SSIM_mean": float("{:.6f}".format(np.mean(ssim_list))), 
         "PRNS_mean": float("{:.6f}".format(np.mean(psnr_list))),
         "Sharpness_mean": float("{:.6f}".format(np.mean(sharpness_list)))       
@@ -495,8 +506,13 @@ if args.evaluate_model_flag:
 
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
             json.dump(results_dict, f, sort_keys=True,  indent=4)
-
-            # Select specific sub-groups of the data to plot predictions
+        
+        time_elapsed = time.time() - start_time
+        print("====== Time elapsed until now: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
+            time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
+    
+        print("=================================== Plotting results for model {}======================================".format(filename))
+        # Select specific sub-groups of the data to plot predictions
         # 1) group 1 - varying freq of labels in dataset
         #   a) (> 200 videos) 3 labels with (putting + down) hand movement
         #   b) (< 70 videos)  3 labels with (putting + down) hand movement
