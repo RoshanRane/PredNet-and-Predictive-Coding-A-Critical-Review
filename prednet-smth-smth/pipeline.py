@@ -91,10 +91,14 @@ parser.add_argument("--early_stopping", default=False, action="store_true",
                     help="enable early-stopping when training")
 parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
+
+# arguments needed for plotting after evaluation
+parser.add_argument("--plot_for_best_n", type=int, default=1,
+                    help="In case there are multiple models in the weights_dir, how many of these models should we plot for ? ")
 parser.add_argument("--plots_per_grp", type=int, default=2,
-                    help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
+                    help="Produces 'n' plots per each sub-grps of videos. ")
 parser.add_argument("--std_param", type=float, default=0.5,
-                    help="parameter for the plotting R function: how many times the STD should we shaded")
+                    help="parameter for the plotting R function: how many times the STD should we shade in the extra_plots of R and E.")
 
 # arguments needed for SmthsmthGenerator()
 parser.add_argument("--fps", type=int, default=12,
@@ -274,6 +278,9 @@ if args.train_model_flag:
 
     plot_loss_curves(history, "MSE", "Prednet", args.weight_dir)
 
+    time_elapsed = time.time() - start_time
+    print("====== Time elapsed for Training: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
+    time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
 else:
     pass
 ########################################################################################################################
@@ -399,8 +406,21 @@ if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
 
     if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
-            
-    for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
+    
+    weight_files = glob.glob(args.weight_dir + "/*.hdf5")
+    # If multiple models are present in weights_dir due to args.model_checkpoint
+    # select the best n models with the lowest reconstruction loss
+    if len(weight_files) > args.plot_for_best_n:
+        # collect (loss, filename) tuples, sort the tuples by the loss, and then collect the filenames only
+        _, weights_sorted = zip(*
+                             sorted(
+                                 [(float(w.split("loss")[-1].split(".hdf5")[0]), w) for w in weight_files]
+                             )
+                            )
+        # select the best n models with lowest reconstruction loss
+        weight_files = weights_sorted[:args.plot_for_best_n]
+        
+    for weights_file in weight_files:
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
         # Load trained model
         f = open(json_file, 'r')
@@ -546,32 +566,25 @@ if args.evaluate_model_flag:
                 extra_test_model = Model(inputs=inputs, outputs=extra_predictions)
                 extra_test_models.append((extra_test_model, output_mode))  
 
+
             #Create outputs for extra plots
             error_X_hats = []
-            for test_model, output_mode in extra_test_models:
-                if output_mode[0]=='E':
-                    error_X_hat = test_model.predict(X_test, total_grps) 
-                    error_X_hats.append((error_X_hat, output_mode))
-
             R_X_hats = []
+            A_X_hats = []
+            Ahat_X_hats = []
             for test_model, output_mode in extra_test_models:
                 if output_mode[0]=='R':
                     R_X_hat = test_model.predict(X_test, total_grps) 
                     R_X_hats.append((R_X_hat, output_mode))
-                    
-            A_X_hats = []
-            Ahat_X_hats = []
-            for test_model, output_mode in extra_test_models:
-                if output_mode[0]=='A':
-                    if output_mode[1]!='h':
-                        A_X_hat = test_model.predict(X_test, total_grps) 
-                        A_X_hats.append((A_X_hat, output_mode))
-                    else:
-                        Ahat_X_hat = test_model.predict(X_test, total_grps) 
-                        Ahat_X_hats.append((Ahat_X_hat, output_mode))
-                        
-
-        
+                elif output_mode[0]=='E':
+                    error_X_hat = test_model.predict(X_test, total_grps) 
+                    error_X_hats.append((error_X_hat, output_mode))
+                elif 'Ahat' in output_mode: 
+                    Ahat_X_hat = test_model.predict(X_test, total_grps) 
+                    Ahat_X_hats.append((Ahat_X_hat, output_mode))
+                else: # output_mode[0]=='A':
+                    A_X_hat = test_model.predict(X_test, total_grps) 
+                    A_X_hats.append((A_X_hat, output_mode))                  
         ######################################################################################################################
 
         plot_save_dir = os.path.join(args.result_dir, 'predictions/' + filename)
@@ -705,5 +718,5 @@ else:
 
 
 time_elapsed = time.time() - start_time
-print("Time elapsed for complete pipeline: {:.0f}h:{:.0f}m:{:.0f}s".format(
+print("====== Time elapsed for complete pipeline: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
     time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
