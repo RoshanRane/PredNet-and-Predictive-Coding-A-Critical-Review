@@ -186,10 +186,16 @@ def return_difference(X_test, X_hat):
     returns mean SSIM and PSNR for one video
     '''
     ssim_list = []
-    psnr_list = [] 
-    for ind in range(1,len(X_test)):#ignore first frame
+    psnr_list = []
+    inf_counter = 0
+    for ind in range(len(X_test)):
         ssim_list.append(ssim(X_test[ind], X_hat[ind], multichannel=True))
-        psnr_list.append(psnr(X_test[ind], X_hat[ind]))
+        if psnr(X_test[ind], X_hat[ind]) !=  float('inf'):
+            psnr_list.append(psnr(X_test[ind], X_hat[ind]))
+        else:
+            inf_counter += 1
+            
+    psnr_list.extend([max(psnr_list)] * inf_counter) #inf means the frames are the same so i add the max of the list for each inf
     return np.mean(ssim_list), np.mean(psnr_list)
                          
     
@@ -198,6 +204,7 @@ def return_sharpness_difference(X_test, X_hat):
     return sharpness difference for one video based on Mathieu 2016 
     '''
     differences = []
+    inf_counter = 0 
     
     for ind, frame in enumerate(X_test): 
        
@@ -215,10 +222,15 @@ def return_sharpness_difference(X_test, X_hat):
             
             res = 10 * np.log10((255*255) / ((np.abs(sum1-sum2) / gy.shape[0]*gy.shape[1]*3 )))
             
-            channel_list.append(res)
-                    
-        differences.append(np.mean(channel_list))
-            
+            if res != float('inf'):         
+                channel_list.append(res)
+            else:
+                inf_counter += 1               
+        
+        if channel_list != []:
+            differences.append(np.mean(channel_list))
+        
+    differences.extend([max(differences)] * inf_counter)  #inf means the frames are the same so i add the max of the list for each inf
     return np.mean(differences)
 
 

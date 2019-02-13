@@ -91,14 +91,10 @@ parser.add_argument("--early_stopping", default=False, action="store_true",
                     help="enable early-stopping when training")
 parser.add_argument("--early_stopping_patience", type=int, default=10,
                     help="number of epochs with no improvement after which training will be stopped")
-
-# arguments needed for plotting after evaluation
-parser.add_argument("--plot_for_best_n", type=int, default=1,
-                    help="In case there are multiple models in the weights_dir, how many of these models should we plot for ? ")
 parser.add_argument("--plots_per_grp", type=int, default=2,
-                    help="Produces 'n' plots per each sub-grps of videos. ")
+                    help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
 parser.add_argument("--std_param", type=float, default=0.5,
-                    help="parameter for the plotting R function: how many times the STD should we shade in the extra_plots of R and E.")
+                    help="parameter for the plotting R function: how many times the STD should we shaded")
 
 # arguments needed for SmthsmthGenerator()
 parser.add_argument("--fps", type=int, default=12,
@@ -162,7 +158,7 @@ print("num of test videos= ", len(test_data))
 
 ############################################ Training model ############################################################
 if args.train_model_flag:
-    print("========================================== Training Model ==========================================")
+    print("########################################## Training Model #################################################")
 
     # create weight directory if it does not exist
     if not os.path.exists(args.weight_dir):
@@ -278,9 +274,6 @@ if args.train_model_flag:
 
     plot_loss_curves(history, "MSE", "Prednet", args.weight_dir)
 
-    time_elapsed = time.time() - start_time
-    print("====== Time elapsed for Training: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
-    time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
 else:
     pass
 ########################################################################################################################
@@ -288,7 +281,7 @@ else:
 
 ########################################### Extrapolate the model ######################################################
 if args.finetune_extrapolate_model_flag:
-    print("========================================== Extrapolating the model ==========================================")
+    print("###################################### Extrapolating the model ############################################")
     # Define loss as MAE of frame predictions after t=0
     # It doesn't make sense to compute loss on error representation, since the error isn't wrt ground truth when
     # extrapolating.
@@ -403,24 +396,11 @@ if args.finetune_extrapolate_model_flag:
 
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
-    print("========================================== Evaluating data ==========================================")
+    print("########################################### Evaluating data ###############################################")
 
     if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
-    
-    weight_files = glob.glob(args.weight_dir + "/*.hdf5")
-    # If multiple models are present in weights_dir due to args.model_checkpoint
-    # select the best n models with the lowest reconstruction loss
-    if len(weight_files) > args.plot_for_best_n:
-        # collect (loss, filename) tuples, sort the tuples by the loss, and then collect the filenames only
-        _, weights_sorted = zip(*
-                             sorted(
-                                 [(float(w.split("loss")[-1].split(".hdf5")[0]), w) for w in weight_files]
-                             )
-                            )
-        # select the best n models with lowest reconstruction loss
-        weight_files = weights_sorted[:args.plot_for_best_n]
-        
-    for weights_file in weight_files:
+            
+    for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
         # Load trained model
         f = open(json_file, 'r')
@@ -456,16 +436,10 @@ if args.evaluate_model_flag:
             max_test_batches = len(test_generator)
        
         #initialize lists for evaluation
-        mse_list_model = []
-        mse_list_baseline = []        
-        mae_list_model = []
-        mae_list_baseline = []
-        mae_model_list = []
-        mae_prev_list = []
-        psnr_list = []
-        ssim_list = []
-        sharpness_list = []
-
+        psnr_list, ssim_list, sharpness_list, psnr_prev_list, ssim_prev_list, sharpness_prev_list = ([] for i in range(6))
+        
+        mse_model_list, mse_prev_list = ([] for i in range(2))
+        
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
             if index > max_test_batches:
@@ -477,42 +451,41 @@ if args.evaluate_model_flag:
                 X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
                 X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
             
-            # Calculate MSE, MAE, SSIM, PSNR and sharpness_index for PredNet predictions 
-            mse_list_model.append(np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
-            mae_list_model.append(np.mean(np.abs(X_test[:, 1:] - X_hat[:, 1:])))  
-            ssim_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[0] for ind in range(X_test.shape[0])]))
-            psnr_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[1] for ind in range(X_test.shape[0])]))            
-            sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind], X_hat[ind])
-                                           for ind in range(X_test.shape[0])]))
-            # Calculate all of the above for previous-frame-copy baseline for comparison
-            mse_list_baseline.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))           
-            mae_list_baseline.append(np.mean(np.abs(X_test[:, :-1] - X_test[:, 1:])))  
+            # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
+            mse_model_list.append(
+                np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
+            mse_prev_list.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))
                  
+            ssim_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[0] for ind in range(X_test.shape[0])]))
+            psnr_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[1] for ind in range(X_test.shape[0])]))            
+            sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
+                                           for ind in range(X_test.shape[0])]))
+            
+            ssim_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[0] 
+                                           for ind in range(X_test.shape[0]-1)]))
+            psnr_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[1] 
+                                           for ind in range(X_test.shape[0]-1)]))
+            sharpness_prev_list.append(np.mean([return_sharpness_difference(X_test[ind][:-1], X_test[ind][1:])
+                                                for ind in range(X_test.shape[0]-1)]))
 
         # save in a dict and limit the size of float decimals to max 6
         results_dict = {                    
-        "MSE_mean": float("{:.6f}".format(np.mean(mse_list_model))), 
-        "MSE_std":float(("{:.6f}".format(np.std(mse_list_model)))), 
-        "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_list_baseline))), 
-        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_list_baseline))),
-        "MAE_mean": float("{:.6f}".format(np.mean(mae_list_model))), 
-        "MAE_std":float(("{:.6f}".format(np.std(mae_list_model)))), 
-        "MAE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mae_list_baseline))), 
-        "MAE_std_prev_frame_copy":float("{:.6f}".format(np.std(mae_list_baseline))),
+        "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
+        "MSE_std":float(("{:.6f}".format(np.std(mse_model_list)))), 
+        "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_prev_list))), 
+        "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_prev_list))),
         "SSIM_mean": float("{:.6f}".format(np.mean(ssim_list))), 
+        "SSIM_mean_prev_frame_copy": float("{:.6f}".format(np.mean(ssim_prev_list))),        
         "PRNS_mean": float("{:.6f}".format(np.mean(psnr_list))),
-        "Sharpness_mean": float("{:.6f}".format(np.mean(sharpness_list)))       
+        "PRNS_mean_prev_frame_copy": float("{:.6f}".format(np.mean(psnr_prev_list))), 
+        "Sharpness_mean": float("{:.6f}".format(np.mean(sharpness_list))),
+        "Sharpness_mean_prev_frame_copy": float("{:.6f}".format(np.mean(sharpness_prev_list)))
         }
 
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
             json.dump(results_dict, f, sort_keys=True,  indent=4)
-        
-        time_elapsed = time.time() - start_time
-        print("====== Time elapsed until now: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
-            time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
-    
-        print("=================================== Plotting results for model {}======================================".format(filename))
-        # Select specific sub-groups of the data to plot predictions
+
+            # Select specific sub-groups of the data to plot predictions
         # 1) group 1 - varying freq of labels in dataset
         #   a) (> 200 videos) 3 labels with (putting + down) hand movement
         #   b) (< 70 videos)  3 labels with (putting + down) hand movement
@@ -582,25 +555,32 @@ if args.evaluate_model_flag:
                 extra_test_model = Model(inputs=inputs, outputs=extra_predictions)
                 extra_test_models.append((extra_test_model, output_mode))  
 
-
             #Create outputs for extra plots
             error_X_hats = []
+            for test_model, output_mode in extra_test_models:
+                if output_mode[0]=='E':
+                    error_X_hat = test_model.predict(X_test, total_grps) 
+                    error_X_hats.append((error_X_hat, output_mode))
+
             R_X_hats = []
-            A_X_hats = []
-            Ahat_X_hats = []
             for test_model, output_mode in extra_test_models:
                 if output_mode[0]=='R':
                     R_X_hat = test_model.predict(X_test, total_grps) 
                     R_X_hats.append((R_X_hat, output_mode))
-                elif output_mode[0]=='E':
-                    error_X_hat = test_model.predict(X_test, total_grps) 
-                    error_X_hats.append((error_X_hat, output_mode))
-                elif 'Ahat' in output_mode: 
-                    Ahat_X_hat = test_model.predict(X_test, total_grps) 
-                    Ahat_X_hats.append((Ahat_X_hat, output_mode))
-                else: # output_mode[0]=='A':
-                    A_X_hat = test_model.predict(X_test, total_grps) 
-                    A_X_hats.append((A_X_hat, output_mode))                  
+                    
+            A_X_hats = []
+            Ahat_X_hats = []
+            for test_model, output_mode in extra_test_models:
+                if output_mode[0]=='A':
+                    if output_mode[1]!='h':
+                        A_X_hat = test_model.predict(X_test, total_grps) 
+                        A_X_hats.append((A_X_hat, output_mode))
+                    else:
+                        Ahat_X_hat = test_model.predict(X_test, total_grps) 
+                        Ahat_X_hats.append((Ahat_X_hat, output_mode))
+                        
+
+        
         ######################################################################################################################
 
         plot_save_dir = os.path.join(args.result_dir, 'predictions/' + filename)
@@ -734,5 +714,5 @@ else:
 
 
 time_elapsed = time.time() - start_time
-print("====== Time elapsed for complete pipeline: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
+print("Time elapsed for complete pipeline: {:.0f}h:{:.0f}m:{:.0f}s".format(
     time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
