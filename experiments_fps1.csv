@@ -1,0 +1,11 @@
+id,Testcase (fps and nframes),Training details,MAE on val (best),MSE baseline (last-frame-copy),MSE baseline std (last-frame-copy),MSE,MSE std,MSE improvement,Features quality,Train time,MAE
+1a,fps12_n20,300k vids- plateued at 200k videos,0.01452,0.0091,0.0013,0.0058,0.0008,0.0033,NaN,24h:49m:43s,NaN
+1b,fps12_n36,75k vids- almost plateaued,0.01528,0.0082,0.0016,0.0056,0.0011,0.0026,NaN,11h:31m:24s,NaN
+2b,fps6_n24,early-stopping(patience 15k vids) at 79.5 k,0.02013,0.0126,0.0018,0.0093,0.0014,0.0033,NaN,8h:37m:6s,NaN
+2c,fps6_n22,early-stopping(patience 15k vids) at 70.5k,0.02132,0.0131,0.0017,0.0096,0.0012,0.0035,NaN,7h:4m:32s,NaN
+2d,fps6_n20,75k vids - could still train,0.02311,0.0138,0.0023,0.0101,0.0017,0.0037,NaN,6h:47m:33s,NaN
+2e,fps6_n14,early-stopping(patience 12k vids) at 100k,0.02434,0.0154,0.0018,0.0117,0.0014,0.0037,NaN,6h:51m:9s,NaN
+3a,fps2_n8,75k vids- could train much longer,0.03728,0.0259,0.0029,0.0223,0.0025,0.0036,NaN,3h:25m:13s,NaN
+4a,dynamic-fps_n36,early-stopping(patience 12k vids) at 52.5k,0.01813,0.0078,0.0018,0.0061,0.0013,0.0017,NaN,9h:15m:40s,NaN
+4b,dynamic-fps_n24,early-stopping(patience 15k vids) at 91.5k,0.01663,0.0077,0.0014,0.0057,0.001,0.002,NaN,11h:22m:7s,NaN
+4c,dynamic-fps_n12,early-stopping(patience 15k vids) at 64.5k,0.01413,0.0077,0.0014,0.0062,0.001,0.0015,NaN,4h:4m:39s,NaN
