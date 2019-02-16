@@ -88,7 +88,7 @@ parser.add_argument("--early_stopping", default=False, action="store_true",
                     help="enable early-stopping when training")
 parser.add_argument("--early_stopping_patience", type=int, default=30,
                     help="number of epochs with no improvement after which training will be stopped")
-parser.add_argument("--plots_per_grp", type=int, default=2,
+parser.add_argument("--plots_per_grp", type=int, default=1,
                     help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
 parser.add_argument("--std_param", type=float, default=0.5,
                     help="parameter for the plotting R function: how many times the STD should we shaded")
@@ -144,7 +144,7 @@ assert args.plots_per_grp > 0, "plots_per_grp cannot be 0 or negative."
 ############################################### Loading data ###########################################################
 
 df = pd.read_csv(os.path.join(args.csv_path), low_memory=False)
-df =df[df.crop_group == 2]
+# df =df[df.crop_group == 2]
 train_data = df[df.split == 'train']
 val_data = df[df.split == 'val']
 test_data = df[df.split == 'holdout']
@@ -519,7 +519,10 @@ if args.evaluate_model_flag:
             ("x_folding_paper_", 133668),
             ("x_turning_hand_motion_", 132242),            
             ("x_shadow_", 47110),
-            ("x_sliding_object_", 175873)            
+            ("x_sliding_object_", 175873),
+            ("x_turning_mug_", 92778),
+            ("x_rolling_tumbler_", 5519),
+            ("x_bottle_closer_to_camera_", 129848)
         ]
 
         # sample 'plots_per_grp' videos from each sub-group
