@@ -63,10 +63,7 @@ parser.add_argument('--result_dir', type=str, default=os.path.join(os.getcwd(), 
                     help="Directory for saving the results")
 parser.add_argument("--nb_epochs", type=int, default=150, help="Number of epochs")
 parser.add_argument("--batch_size", type=int, default=32, help="batch size to use for training, testing and validation")
-parser.add_argument("--n_channels", type=int, default=3, help="number of channels - RGB")
-parser.add_argument("--n_chan_layer", type=list, default=[48, 96, 192], help="number of channels for layer 1,2,3 and so "
-                                                                           "on depending upon the length of the list.")
-parser.add_argument("--layer_loss", type=list, default=[1., 0., 0., 0.], help='Weightage of each layer in final loss.')
+parser.add_argument("--layer_loss", nargs='+', type=float, default=[1., 0., 0., 0.], help='Weightage of each layer in final loss.')
 parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
 parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
 parser.add_argument("--lr", type=float, default=0.001,
@@ -89,7 +86,7 @@ parser.add_argument("--model_checkpoint", type=int, default=None,
                          "saves the best model on val dataset")
 parser.add_argument("--early_stopping", default=False, action="store_true",
                     help="enable early-stopping when training")
-parser.add_argument("--early_stopping_patience", type=int, default=10,
+parser.add_argument("--early_stopping_patience", type=int, default=30,
                     help="number of epochs with no improvement after which training will be stopped")
 parser.add_argument("--plots_per_grp", type=int, default=2,
                     help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
@@ -107,9 +104,12 @@ parser.add_argument("--nframes", type=int, default=None, help="number of frames"
 parser.add_argument("--seed", type=int, default=None, help="seed")
 
 # arguments needed by PredNet model
-parser.add_argument("--a_filt_sizes", type=tuple, default=(3, 3, 3), help="A_filt_sizes")
-parser.add_argument("--ahat_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="Ahat_filt_sizes")
-parser.add_argument("--r_filt_sizes", type=tuple, default=(3, 3, 3, 3), help="R_filt_sizes")
+parser.add_argument("--n_channels", type=int, default=3, help="number of channels - RGB")
+parser.add_argument("--n_chan_layer", nargs='+', type=int, default=[48, 96, 192], help="number of channels for layer 1,2,3 and so "
+                                                                           "on depending upon the length of the list.")
+parser.add_argument("--a_filt_sizes", nargs='+', type=int, default=(3, 3, 3), help="A_filt_sizes")
+parser.add_argument("--ahat_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="Ahat_filt_sizes")
+parser.add_argument("--r_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="R_filt_sizes")
 parser.add_argument("--frame_selection", type=str, default="smth-smth-baseline-method",
                     help="n frame selection method for sequence generator")
 
@@ -144,6 +144,7 @@ assert args.plots_per_grp > 0, "plots_per_grp cannot be 0 or negative."
 ############################################### Loading data ###########################################################
 
 df = pd.read_csv(os.path.join(args.csv_path), low_memory=False)
+df =df[df.crop_group == 2]
 train_data = df[df.split == 'train']
 val_data = df[df.split == 'val']
 test_data = df[df.split == 'holdout']
@@ -484,46 +485,57 @@ if args.evaluate_model_flag:
 
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
             json.dump(results_dict, f, sort_keys=True,  indent=4)
-
-            # Select specific sub-groups of the data to plot predictions
+        
+        time_elapsed = time.time() - start_time
+        print("====== Time elapsed until now: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
+            time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
+    
+        print("========================= Plotting results for model {}=======================".format(filename))
+        # hand pick specific videos / category of videos to plot predictions
         # 1) group 1 - varying freq of labels in dataset
         #   a) (> 200 videos) 3 labels with (putting + down) hand movement
         #   b) (< 70 videos)  3 labels with (putting + down) hand movement
         # 2) group 2 - different hand movements (same freq)
-        #     a) showing to the camera
-        #     b) digging
+        #     a) digging
+        #     b) folding / unfolding
         # 3) group 3 - different objects and background
         #     a) throwning [something1]
         #     b) throwning [something2]
-        # 4) group 4 - ego motion and no ego motion
+        # 4) group 4 - ego motion
         #   a) turning camera / moving camera closer
-        #   b) folding / unfolding
-        sub_grps = [  # tuples containing (grp_name, templates)
-            ("1a_freq_putting_", ["Putting [something] on a surface"]),
-            ("1b_infreq_putting_", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
-            ("2a_no_hand_motion_showing_", ["Showing [something] to the camera"]),
-            ("2b_hand_motion_digging_", ["Digging [something] out of [something]"]),
-            ("3a_throwing_object1_", ["Throwing [something]"]),
-            ("3b_throwing_object2_", ["Throwing [something]"]),
+        #   b) showing to the camera
+        sub_grps = [  # tuples containing (grp_name, templates or specific-ids)
+            ("1a_putting_freq_", ["Putting [something] on a surface"]),
+            ("1c_putting_infreq_", ["Putting [something] onto a slanted surface but it doesn't glide down"]),
+            ("2a_digging_hand_motion_", ["Digging [something] out of [something]"]),
+            ("2b_folding_hand_motion_", ["Folding [something]", "Unfolding [something]"]),     
+            ("3a_throwing_object_", ["Throwing [something]", "Throwing [something]"]),
             ("4a_camera_motion_", ["Turning the camera left while filming [something]",
                                   "Turning the camera downwards while filming [something]",
                                   "Approaching [something] with your camera"]),
-            ("4b_no_camera_motion_folding_", ["Folding [something]", "Unfolding [something]"])
+            ("4b_showing_no_hand_", ["Showing [something] to the camera"]),
+            #specific videos
+            ("x_putting_", 111825),
+            ("x_folding_paper_", 133668),
+            ("x_turning_hand_motion_", 132242),            
+            ("x_shadow_", 47110),
+            ("x_sliding_object_", 175873)            
         ]
-
-        total_vids_to_plt = args.plots_per_grp * len(sub_grps)
-        total_grps = len(sub_grps)
-
 
         # sample 'plots_per_grp' videos from each sub-group
         test_data_for_plt = pd.DataFrame()
         for name, lbls in sub_grps:
-            test_data_for_plt = test_data_for_plt.append(
-                test_data[test_data.template.isin(lbls)].sample(n=args.plots_per_grp,
-                                                                random_state=args.seed)
-                , ignore_index=True)
-            
-
+            if (name[:2] == "x_"):# specific videos
+                test_data_for_plt = test_data_for_plt.append(
+                    test_data[test_data.id == lbls], ignore_index=True)
+            else: # random sample
+                test_data_for_plt = test_data_for_plt.append(
+                    test_data[test_data.template.isin(lbls)].sample(n=args.plots_per_grp,
+                                                                    random_state=args.seed)
+                    , ignore_index=True)
+                
+        total_vids_to_plt = len(test_data_for_plt)
+        
         X_test = SmthSmthSequenceGenerator(test_data_for_plt
                                            , nframes=args.nframes
                                            , fps=args.fps
@@ -541,8 +553,9 @@ if args.evaluate_model_flag:
             
             #Create models for error and R plots
             extra_test_models = []
-            extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'A0', 'A1', 'A2', 'A3', 
+            extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'A0', 'A1', 'A2', 'A3',
                                   'Ahat0', 'Ahat1', 'Ahat2', 'Ahat3', 'R0', 'R1', 'R2', 'R3']
+            
             for output_mode in extra_output_modes:
                 layer_config['output_mode'] = output_mode    
                 data_format = (layer_config['data_format'] if 'data_format' in layer_config 
@@ -557,31 +570,23 @@ if args.evaluate_model_flag:
 
             #Create outputs for extra plots
             error_X_hats = []
-            for test_model, output_mode in extra_test_models:
-                if output_mode[0]=='E':
-                    error_X_hat = test_model.predict(X_test, total_grps) 
-                    error_X_hats.append((error_X_hat, output_mode))
-
             R_X_hats = []
-            for test_model, output_mode in extra_test_models:
-                if output_mode[0]=='R':
-                    R_X_hat = test_model.predict(X_test, total_grps) 
-                    R_X_hats.append((R_X_hat, output_mode))
-                    
             A_X_hats = []
             Ahat_X_hats = []
             for test_model, output_mode in extra_test_models:
-                if output_mode[0]=='A':
-                    if output_mode[1]!='h':
-                        A_X_hat = test_model.predict(X_test, total_grps) 
-                        A_X_hats.append((A_X_hat, output_mode))
-                    else:
-                        Ahat_X_hat = test_model.predict(X_test, total_grps) 
-                        Ahat_X_hats.append((Ahat_X_hat, output_mode))
-                        
-
-        
-        ######################################################################################################################
+                if output_mode[0]=='R':
+                    R_X_hat = test_model.predict(X_test, total_vids_to_plt) 
+                    R_X_hats.append((R_X_hat, output_mode))
+                elif output_mode[0]=='E':
+                    error_X_hat = test_model.predict(X_test, total_vids_to_plt) 
+                    error_X_hats.append((error_X_hat, output_mode))
+                elif 'Ahat' in output_mode: 
+                    Ahat_X_hat = test_model.predict(X_test, total_vids_to_plt) 
+                    Ahat_X_hats.append((Ahat_X_hat, output_mode))
+                else: # output_mode[0]=='A':
+                    A_X_hat = test_model.predict(X_test, total_vids_to_plt) 
+                    A_X_hats.append((A_X_hat, output_mode))
+ #######################################################################################################################
 
         plot_save_dir = os.path.join(args.result_dir, 'predictions/' + filename)
         if not os.path.exists(plot_save_dir):

@@ -11,10 +11,11 @@ epochs=${3-500}
 export CUDA_VISIBLE_DEVICES=$2 
 
 echo "========================================= SETTINGS =============================================" > nohup_$1.out
-cmd="python3 pipeline.py --batch_size 64 --nframes 12 --fps 3 --im_height 48 --im_width 56  --weight_dir model_fps3_n12_img48_56_750k --evaluate_model_flag --result_dir results_$1 --samples_test 100 --extra_plots_flag"
+echo "[crop_group == 2] videos only (70% of the dataset)" >> nohup_$1.out
+cmd="python3 pipeline.py --batch_size 64 --nframes 24 --fps 12 --im_height 48 --im_width 80 --weight_dir model_crpgrp2_l5_900k  --evaluate_model_flag --samples_test 100 --result_dir results_$1 --extra_plots_flag"
 echo $cmd >> nohup_$1.out
 echo "=================================================================================================" >> nohup_$1.out
-nohup $cmd &>> nohup_$1.out & #--train_model_flag --nb_epochs $epochs --samples_per_epoch 1500 --samples_per_epoch_val 1000  --model_checkpoint 5 
+nohup $cmd &>> nohup_$1.out & # --train_model_flag --samples_per_epoch 1500  --samples_per_epoch_val 500  --nb_epochs $epochs --early_stopping --early_stopping_patience 70 --n_chan_layer 32 48 96 192 --a_filt_sizes 5 5 5 5 --ahat_filt_sizes 3 3 3 3 3 --r_filt_sizes 3 3 3 3 4 --layer_loss 1 0 0 0 0
 #--samples_per_epoch 100 --data_split_ratio 0.002 --frame_selection "dynamic-fps" --model_checkpoint 1
 # parser.add_argument("--preprocess_data_flag", type=bool, default=False, help="Perform pre-processing")
 # parser.add_argument("--train_model_flag", type=bool, default=False, help="Train the model")
