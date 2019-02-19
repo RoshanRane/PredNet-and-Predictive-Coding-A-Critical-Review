@@ -491,8 +491,8 @@ if args.evaluate_model_flag:
         "MAE_std_prev_frame_copy":float("{:.6f}".format(np.std(mae_prev_list))),
         "SSIM_mean": float("{:.6f}".format(np.mean(ssim_list))), 
         "SSIM_mean_prev_frame_copy": float("{:.6f}".format(np.mean(ssim_prev_list))),        
-        "PRNS_mean": float("{:.6f}".format(np.mean(psnr_list))),
-        "PRNS_mean_prev_frame_copy": float("{:.6f}".format(np.mean(psnr_prev_list))), 
+        "PSNR_mean": float("{:.6f}".format(np.mean(psnr_list))),
+        "PSNR_mean_prev_frame_copy": float("{:.6f}".format(np.mean(psnr_prev_list))), 
         "Sharpness_mean": float("{:.6f}".format(np.mean(sharpness_list))),
         "Sharpness_mean_prev_frame_copy": float("{:.6f}".format(np.mean(sharpness_prev_list)))
         }
@@ -565,13 +565,16 @@ if args.evaluate_model_flag:
         X_hat = test_model.predict(X_test, total_vids_to_plt)
 
        ############################################## Extra plots ##############################################
-       
+        
         if args.extra_plots_flag:
             
             #Create models for error and R plots
             extra_test_models = []
-            extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'A0', 'A1', 'A2', 'A3',
-                                  'Ahat0', 'Ahat1', 'Ahat2', 'Ahat3', 'R0', 'R1', 'R2', 'R3']
+            no_layers = len(test_prednet.stack_sizes)
+            extra_output_modes = (['E'+str(no) for no in range(no_layers)] + ['A'+str(no) for no in range(no_layers)] 
+                                + ['Ahat'+str(no) for no in range(no_layers)] + ['R'+str(no) for no in range(no_layers)])
+           # extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'A0', 'A1', 'A2', 'A3',
+           #                       'Ahat0', 'Ahat1', 'Ahat2', 'Ahat3', 'R0', 'R1', 'R2', 'R3']
             
             for output_mode in extra_output_modes:
                 layer_config['output_mode'] = output_mode    
@@ -661,7 +664,7 @@ if args.evaluate_model_flag:
                 ax.grid(True)                  
                 ax.set_ylabel(r"Mean R activations", fontsize=10)
                 ax.xaxis.set_label_position('top') 
-                ax.legend(['R0','R1','R2','R3'])
+                ax.legend(['R'+str(no) for no in range(no_layers)], loc='center left')
                 
                 #Create values for E plots      
                 results = plot_changes_in_r(error_X_hats, i, std_param=args.std_param)
@@ -680,7 +683,7 @@ if args.evaluate_model_flag:
                 ax.grid(True)                  
                 ax.set_ylabel(r"Mean E activations", fontsize=10)
                 ax.xaxis.set_label_position('top') 
-                ax.legend(['E0','E1','E2','E3'])
+                ax.legend(['E'+str(no) for no in range(no_layers)], loc='center left')
 
                 #Create error output matrices to plot inside the next loop
                 R_matrices = plot_errors(R_X_hats, X_test, ind=i)
