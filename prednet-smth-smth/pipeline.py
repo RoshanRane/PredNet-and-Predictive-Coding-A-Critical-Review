@@ -61,6 +61,8 @@ parser.add_argument('--weight_dir', type=str, default=os.path.join(os.getcwd(), 
                     help="Directory for saving trained weights and model")
 parser.add_argument('--result_dir', type=str, default=os.path.join(os.getcwd(), "results"),
                     help="Directory for saving the results")
+parser.add_argument("--crop_grp", type=int, default=0,
+                    help="Use one of the sub groups of the dataset. Allowed values are 1(30% of dataset of videos with width<420) and 2(70% of dataset of videos with width>=420)")
 parser.add_argument("--nb_epochs", type=int, default=150, help="Number of epochs")
 parser.add_argument("--batch_size", type=int, default=32, help="batch size to use for training, testing and validation")
 parser.add_argument("--layer_loss", nargs='+', type=float, default=[1., 0., 0., 0.], help='Weightage of each layer in final loss.')
@@ -144,7 +146,9 @@ assert args.plots_per_grp > 0, "plots_per_grp cannot be 0 or negative."
 ############################################### Loading data ###########################################################
 
 df = pd.read_csv(os.path.join(args.csv_path), low_memory=False)
-# df =df[df.crop_group == 2]
+if(args.crop_grp):
+    assert args.crop_grp in [1,2], "Invalid value for args.crop_grp. Allowed values are 1(30% of dataset of videos with width<420) and 2(70% of dataset of videos with width>=420)"
+    df =df[df.crop_group == args.crop_grp]
 train_data = df[df.split == 'train']
 val_data = df[df.split == 'val']
 test_data = df[df.split == 'holdout']
@@ -436,10 +440,9 @@ if args.evaluate_model_flag:
         else:
             max_test_batches = len(test_generator)
        
-        #initialize lists for evaluation
+        #initialize lists for evaluation        
+        mse_model_list, mse_prev_list, mae_model_list, mae_prev_list = ([] for i in range(4))
         psnr_list, ssim_list, sharpness_list, psnr_prev_list, ssim_prev_list, sharpness_prev_list = ([] for i in range(6))
-        
-        mse_model_list, mse_prev_list = ([] for i in range(2))
         
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
@@ -452,20 +455,27 @@ if args.evaluate_model_flag:
                 X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
                 X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
             
-            # Compare MSE of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
+            # Compare the scores of PredNet predictions vs. using last frame.  Write results to prediction_scores.txt
+            
+            # mean square error
             mse_model_list.append(
                 np.mean((X_test[:, 1:] - X_hat[:, 1:]) ** 2))  # look at all timesteps except the first
             mse_prev_list.append(np.mean((X_test[:, :-1] - X_test[:, 1:]) ** 2))
-                 
+            # mean absolute error
+            mae_model_list.append(
+                np.mean(np.abs(X_test[:, 1:] - X_hat[:, 1:])))
+            mae_prev_list.append(np.mean(np.abs(X_test[:, :-1] - X_test[:, 1:])))
+            # ssim
             ssim_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[0] for ind in range(X_test.shape[0])]))
-            psnr_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[1] for ind in range(X_test.shape[0])]))            
-            sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
-                                           for ind in range(X_test.shape[0])]))
-            
             ssim_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[0] 
                                            for ind in range(X_test.shape[0]-1)]))
+            # psnr
+            psnr_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[1] for ind in range(X_test.shape[0])]))            
             psnr_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[1] 
                                            for ind in range(X_test.shape[0]-1)]))
+            # sharpness
+            sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
+                                           for ind in range(X_test.shape[0])]))
             sharpness_prev_list.append(np.mean([return_sharpness_difference(X_test[ind][:-1], X_test[ind][1:])
                                                 for ind in range(X_test.shape[0]-1)]))
 
@@ -475,6 +485,10 @@ if args.evaluate_model_flag:
         "MSE_std":float(("{:.6f}".format(np.std(mse_model_list)))), 
         "MSE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mse_prev_list))), 
         "MSE_std_prev_frame_copy":float("{:.6f}".format(np.std(mse_prev_list))),
+        "MAE_mean": float("{:.6f}".format(np.mean(mae_model_list))), 
+        "MAE_std":float(("{:.6f}".format(np.std(mae_model_list)))), 
+        "MAE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mae_prev_list))), 
+        "MAE_std_prev_frame_copy":float("{:.6f}".format(np.std(mae_prev_list))),
         "SSIM_mean": float("{:.6f}".format(np.mean(ssim_list))), 
         "SSIM_mean_prev_frame_copy": float("{:.6f}".format(np.mean(ssim_prev_list))),        
         "PRNS_mean": float("{:.6f}".format(np.mean(psnr_list))),
@@ -528,15 +542,15 @@ if args.evaluate_model_flag:
         # sample 'plots_per_grp' videos from each sub-group
         test_data_for_plt = pd.DataFrame()
         for name, lbls in sub_grps:
-            if (name[:2] == "x_"):# specific videos
-                test_data_for_plt = test_data_for_plt.append(
-                    test_data[test_data.id == lbls], ignore_index=True)
-            else: # random sample
-                test_data_for_plt = test_data_for_plt.append(
-                    test_data[test_data.template.isin(lbls)].sample(n=args.plots_per_grp,
-                                                                    random_state=args.seed)
-                    , ignore_index=True)
-                
+            if (name[:2] != "x_"):# random sample
+                rows = test_data[test_data.template.isin(lbls)].sample(n=args.plots_per_grp,
+                                                                    random_state=args.seed)           
+            else:# specific videos
+                rows = test_data[test_data.id == lbls] 
+            # save names in the df for creating plot names later    
+            rows["name"]=name
+            test_data_for_plt = test_data_for_plt.append(rows, ignore_index=True)
+            
         total_vids_to_plt = len(test_data_for_plt)
         
         X_test = SmthSmthSequenceGenerator(test_data_for_plt
@@ -711,9 +725,8 @@ if args.evaluate_model_flag:
                         ax.set_xlim(0,time_steps*args.im_width)                
             #####################################################################################################################
                 
-            grp_i = i // args.plots_per_grp
             plt.subplots_adjust(hspace=0., wspace=0., top=0.97)
-            plt.savefig(plot_save_dir + "/" + sub_grps[grp_i][0] + str(test_data_for_plt.loc[i,'id']) + '.png')
+            plt.savefig(plot_save_dir + "/" + test_data_for_plt.loc[i,'name'] + str(test_data_for_plt.loc[i,'id']) + '.png')
             plt.clf()
 
 else:
