@@ -94,6 +94,8 @@ parser.add_argument("--plots_per_grp", type=int, default=1,
                     help="Evaluation_mode. Produces 'n' plots per each sub-grps of videos. ")
 parser.add_argument("--std_param", type=float, default=0.5,
                     help="parameter for the plotting R function: how many times the STD should we shaded")
+parser.add_argument("--plot_for_best_n", type=int, default=1,
+                    help="number of 'best' models(models with least loss) in 'weights_dir' to evaluate on.")
 
 # arguments needed for SmthsmthGenerator()
 parser.add_argument("--fps", type=int, default=12,
@@ -404,8 +406,21 @@ if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
 
     if not os.path.exists(args.result_dir): os.mkdir(args.result_dir)
-            
-    for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
+    
+    weight_files = glob.glob(args.weight_dir + "/*.hdf5")
+    # If multiple models are present in weights_dir due to args.model_checkpoint
+    # select the best n models with the lowest reconstruction loss
+    if len(weight_files) > args.plot_for_best_n:
+        # collect (loss, filename) tuples, sort the tuples by the loss, and then collect the filenames only
+        _, weights_sorted = zip(*
+                             sorted(
+                                 [(float(w.split("loss")[-1].split(".hdf5")[0]), w) for w in weight_files]
+                             )
+                            )
+        # select the best n models with lowest reconstruction loss
+        weight_files = weights_sorted[:args.plot_for_best_n]
+
+    for weights_file in weight_files:
         filename = weights_file.split("/")[-1].split(".hdf5")[0]
         # Load trained model
         f = open(json_file, 'r')
