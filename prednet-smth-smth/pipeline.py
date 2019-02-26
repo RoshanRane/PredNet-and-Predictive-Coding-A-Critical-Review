@@ -36,7 +36,8 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 # Custom imports
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
 from data_utils import SmthSmthSequenceGenerator
-from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r, return_difference, return_sharpness_difference
+from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r, return_difference
+from viz_utils import conditioned_ssim, sharpness_difference_grad #, sharpness, sharpness_difference
 from prednet import PredNet
 ########################################################################################################################
 
@@ -442,8 +443,10 @@ if args.evaluate_model_flag:
        
         #initialize lists for evaluation        
         mse_model_list, mse_prev_list, mae_model_list, mae_prev_list = ([] for i in range(4))
-        psnr_list, ssim_list, sharpness_list, psnr_prev_list, ssim_prev_list, sharpness_prev_list = ([] for i in range(6))
-        
+        psnr_list, ssim_list, sharpness_grad_list, psnr_prev_list, ssim_prev_list, sharpness_grad_prev_list = ([] for i in range(6))
+        psnr_movement_list, psnr_movement_prev_list, ssim_movement_list, ssim_movement_prev_list =  ([] for i in range(4))
+        conditioned_ssim_list, sharpness_list = ([] for i in range(2))
+                                             
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
             if index > max_test_batches:
@@ -469,16 +472,30 @@ if args.evaluate_model_flag:
             ssim_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[0] for ind in range(X_test.shape[0])]))
             ssim_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[0] 
                                            for ind in range(X_test.shape[0]-1)]))
+            ssim_movement_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[2] 
+                                               for ind in range(X_test.shape[0])]))
+            ssim_movement_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[2] 
+                                           for ind in range(X_test.shape[0]-1)])) 
+            conditioned_ssim_list.append(np.mean([conditioned_ssim(X_test[ind], X_hat[ind]) 
+                                           for ind in range(X_test.shape[0])])) 
+            
             # psnr
             psnr_list.append(np.mean([return_difference(X_test[ind][1:], X_hat[ind][1:])[1] for ind in range(X_test.shape[0])]))            
             psnr_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[1] 
                                            for ind in range(X_test.shape[0]-1)]))
+            psnr_movement_list.append(np.mean([return_difference(X_test[ind], X_hat[ind])[3] 
+                                               for ind in range(X_test.shape[0])]))
+            psnr_movement_prev_list.append(np.mean([return_difference(X_test[ind][:-1], X_test[ind][1:])[3] 
+                                           for ind in range(X_test.shape[0]-1)]))
+            
             # sharpness
-            sharpness_list.append(np.mean([return_sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
+            sharpness_grad_list.append(np.mean([sharpness_difference_grad(X_test[ind][1:], X_hat[ind][1:])
                                            for ind in range(X_test.shape[0])]))
-            sharpness_prev_list.append(np.mean([return_sharpness_difference(X_test[ind][:-1], X_test[ind][1:])
+            sharpness_grad_prev_list.append(np.mean([sharpness_difference_grad(X_test[ind][:-1], X_test[ind][1:])
                                                 for ind in range(X_test.shape[0]-1)]))
-
+         # this is very slow
+         #   sharpness_list.append(np.mean([sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
+         #                                 for ind in range(X_test.shape[0])]))
         # save in a dict and limit the size of float decimals to max 6
         results_dict = {                    
         "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
@@ -490,13 +507,19 @@ if args.evaluate_model_flag:
         "MAE_mean_prev_frame_copy":float("{:.6f}".format(np.mean(mae_prev_list))), 
         "MAE_std_prev_frame_copy":float("{:.6f}".format(np.std(mae_prev_list))),
         "SSIM_mean": float("{:.6f}".format(np.mean(ssim_list))), 
-        "SSIM_mean_prev_frame_copy": float("{:.6f}".format(np.mean(ssim_prev_list))),        
+        "SSIM_mean_prev_frame_copy": float("{:.6f}".format(np.mean(ssim_prev_list))), 
+        "SSIM_movement_mean": float("{:.6f}".format(np.mean(ssim_movement_list))), 
+        "SSIM_movement_mean_prev_frame_copy": float("{:.6f}".format(np.mean(ssim_movement_prev_list))), 
+        "Conditioned_SSIM_mean": float("{:.6f}".format(np.mean(conditioned_ssim_list))),
         "PSNR_mean": float("{:.6f}".format(np.mean(psnr_list))),
         "PSNR_mean_prev_frame_copy": float("{:.6f}".format(np.mean(psnr_prev_list))), 
-        "Sharpness_mean": float("{:.6f}".format(np.mean(sharpness_list))),
-        "Sharpness_mean_prev_frame_copy": float("{:.6f}".format(np.mean(sharpness_prev_list)))
+        "PSNR_movement_mean": float("{:.6f}".format(np.mean(psnr_movement_list))), 
+        "PSNR_movement_mean_prev_frame_copy": float("{:.6f}".format(np.mean(psnr_movement_prev_list))), 
+        "Sharpness_grad_mean": float("{:.6f}".format(np.mean(sharpness_grad_list))),
+        "Sharpness_grad_mean_prev_frame_copy": float("{:.6f}".format(np.mean(sharpness_grad_prev_list))),
+        #"Sharpness_difference": float("{:.6f}".format(np.mean(sharpness_list)))
         }
-
+            
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
             json.dump(results_dict, f, sort_keys=True,  indent=4)
         
@@ -573,9 +596,7 @@ if args.evaluate_model_flag:
             no_layers = len(test_prednet.stack_sizes)
             extra_output_modes = (['E'+str(no) for no in range(no_layers)] + ['A'+str(no) for no in range(no_layers)] 
                                 + ['Ahat'+str(no) for no in range(no_layers)] + ['R'+str(no) for no in range(no_layers)])
-           # extra_output_modes = ['E0', 'E1', 'E2', 'E3', 'A0', 'A1', 'A2', 'A3',
-           #                       'Ahat0', 'Ahat1', 'Ahat2', 'Ahat3', 'R0', 'R1', 'R2', 'R3']
-            
+                      
             for output_mode in extra_output_modes:
                 layer_config['output_mode'] = output_mode    
                 data_format = (layer_config['data_format'] if 'data_format' in layer_config 
