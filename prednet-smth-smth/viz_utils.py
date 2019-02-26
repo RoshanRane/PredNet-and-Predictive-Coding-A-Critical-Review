@@ -9,6 +9,7 @@ import pandas as pd
 from skimage.measure import compare_ssim as ssim
 from skimage.measure import compare_psnr as psnr
 from skimage.transform import rescale
+from scipy.fftpack import fft, fftshift
 import sys
 import time
 
@@ -183,25 +184,38 @@ def plot_changes_in_r(X_hats, ind, std_param=0.5):
 
 def return_difference(X_test, X_hat):
     '''
-    returns mean SSIM and PSNR for one video
+    returns mean SSIM and PSNR for all frames + only for frames with movement for one video
     '''
     ssim_list = []
     psnr_list = []
+    ssim_movement_list = []
+    psnr_movement_list = []
     inf_counter = 0
     for ind in range(len(X_test)):
         ssim_list.append(ssim(X_test[ind], X_hat[ind], multichannel=True))
+        #for movement only
+        if 0 < ind < len(X_test) and not np.array_equal(X_test[ind], X_test[ind-1]):
+            ssim_movement_list.append(ssim(X_test[ind], X_hat[ind], multichannel=True))   
+            if psnr(X_test[ind], X_hat[ind]) !=  float('inf'):
+                psnr_movement_list.append(psnr(X_test[ind], X_hat[ind]))
+            else:
+                inf_counter += 1
+        
         if psnr(X_test[ind], X_hat[ind]) !=  float('inf'):
             psnr_list.append(psnr(X_test[ind], X_hat[ind]))
         else:
             inf_counter += 1
-            
-    psnr_list.extend([max(psnr_list)] * inf_counter) #inf means the frames are the same so i add the max of the list for each inf
-    return np.mean(ssim_list), np.mean(psnr_list)
-                         
+                                 
+    psnr_list.extend([max(psnr_list)] * inf_counter) #inf means the frames are the same so i add the max of the list for each inf 
+    if psnr_movement_list != []:
+        psnr_movement_list.extend([max(psnr_movement_list)] * inf_counter)
     
-def return_sharpness_difference(X_test, X_hat):
+    return np.mean(ssim_list), np.mean(psnr_list), np.mean(ssim_movement_list), np.mean(psnr_movement_list)
+                             
+def sharpness_difference_grad(X_test, X_hat):
     '''
     return sharpness difference for one video based on Mathieu 2016 
+    the bigger the better
     '''
     differences = []
     inf_counter = 0 
@@ -232,6 +246,45 @@ def return_sharpness_difference(X_test, X_hat):
         
     differences.extend([max(differences)] * inf_counter)  #inf means the frames are the same so i add the max of the list for each inf
     return np.mean(differences)
+    
+def conditioned_ssim(X_test, X_hat):
+    '''
+    ssim of a video frame by frame, conditioned on previous frame copy
+    (max_SSIM - SSIM(prev_actual, current_pred)) * SSIM(current_actual, current_pred)
+    '''
+    current = []
+    prev = []
+    for ind in range(len(X_test)):
+        current.append(ssim(X_test[ind], X_hat[ind], multichannel=True))
+        if ind < len(X_test)-1:
+            prev.append(ssim(X_test[ind], X_hat[ind+1], multichannel=True))
+    
+    return np.mean([(1-curr)*prv for curr,prv in zip(current,prev)])
 
+# VERY slow
+# def sharpness(vid):
+#     '''
+#     returns sharpness of one video based on De and Masilamani 2013
+#     '''
+#     FMs = []
+#     for frame in range(vid.shape[0]):
+#         for channel in range(vid.shape[3]):
+#             pic = np.transpose(vid[frame], (2,0,1))[channel]
+#             F = fft(pic)
+#             Max = np.max(np.absolute(fftshift(F)))
+#             TH = len([pix for pix in F.flatten() if pix > Max/1000])
+#             FM = TH / (pic.shape[0] * pic.shape[1])
+#             FMs.append(FM)
+            
+#     return np.mean(FMs)
+
+# def sharpness_difference(X_test, X_hat):
+#     '''
+#     calculates the sharpness difference between prediction and actual video, based on the previous sharpness function
+#     the smaller the better
+#     '''
+#     actual_sharpness = sharpness(X_test)
+#     pred_sharpness = sharpness(X_hat)
+#     return (actual_sharpness-pred_sharpness)
 
       
