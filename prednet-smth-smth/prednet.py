@@ -66,7 +66,7 @@ class PredNet(Recurrent):
                  pixel_max=1., error_activation='relu', A_activation='relu',
                  LSTM_activation='tanh', LSTM_inner_activation='hard_sigmoid',
                  output_mode='error', extrap_start_time=None,
-                 data_format=K.image_data_format(), **kwargs):
+                 data_format=K.image_data_format(), strided_conv_pool=False, **kwargs): ###
         self.stack_sizes = stack_sizes
         self.nb_layers = len(stack_sizes)
         assert len(R_stack_sizes) == self.nb_layers, 'len(R_stack_sizes) must equal len(stack_sizes)'
@@ -83,6 +83,7 @@ class PredNet(Recurrent):
         self.A_activation = activations.get(A_activation)
         self.LSTM_activation = activations.get(LSTM_activation)
         self.LSTM_inner_activation = activations.get(LSTM_inner_activation)
+        self.strided_conv_pool = strided_conv_pool ###
 
         default_output_modes = ['prediction', 'error', 'all']
         layer_output_modes = [layer + str(n) for n in range(self.nb_layers) for layer in ['R', 'E', 'A', 'Ahat']]
@@ -103,7 +104,8 @@ class PredNet(Recurrent):
         self.column_axis = -1 if data_format == 'channels_first' else -2
         super(PredNet, self).__init__(**kwargs)
         self.input_spec = [InputSpec(ndim=5)]
-
+        # if strided_conv_pool=True, pooling layers are replaced by strided convolutions
+        
     def compute_output_shape(self, input_shape):
         if self.output_mode == 'prediction':
             out_shape = input_shape[2:]
@@ -179,7 +181,9 @@ class PredNet(Recurrent):
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
         self.conv_layers = {c: [] for c in ['i', 'f', 'c', 'o', 'a', 'ahat']}
-
+        if (self.strided_conv_pool): ###
+            self.conv_layers.update({'a_strided':[]}) ###
+            
         for l in range(self.nb_layers):
             for c in ['i', 'f', 'c', 'o']:
                 act = self.LSTM_activation if c == 'c' else self.LSTM_inner_activation
@@ -190,9 +194,11 @@ class PredNet(Recurrent):
 
             if l < self.nb_layers - 1:
                 self.conv_layers['a'].append(Conv2D(self.stack_sizes[l+1], self.A_filt_sizes[l], padding='same', activation=self.A_activation, data_format=self.data_format))
-
+                if (self.strided_conv_pool): ###
+                    self.conv_layers['a_strided'].append(Conv2D(self.stack_sizes[l+1], self.A_filt_sizes[l], strides=(2, 2),  padding='same', activation=self.A_activation, data_format=self.data_format)) ###
         self.upsample = UpSampling2D(data_format=self.data_format)
-        self.pool = MaxPooling2D(data_format=self.data_format)
+        if not(self.strided_conv_pool): ###
+            self.pool = MaxPooling2D(data_format=self.data_format)
 
         self.trainable_weights = []
         nb_row, nb_col = (input_shape[-2], input_shape[-1]) if self.data_format == 'channels_first' else (input_shape[-3], input_shape[-2])
@@ -201,8 +207,10 @@ class PredNet(Recurrent):
                 ds_factor = 2 ** l
                 if c == 'ahat':
                     nb_channels = self.R_stack_sizes[l]
-                elif c == 'a':
+                elif c == 'a' :
                     nb_channels = 2 * self.R_stack_sizes[l]
+                elif c == 'a_strided': ###
+                    nb_channels = self.stack_sizes[l+1]                  
                 else:
                     nb_channels = self.stack_sizes[l] * 2 + self.R_stack_sizes[l]
                     if l < self.nb_layers - 1:
@@ -275,7 +283,10 @@ class PredNet(Recurrent):
 
             if l < self.nb_layers - 1:
                 a = self.conv_layers['a'][l].call(e[l])
-                a = self.pool.call(a)  # target for next layer
+                if (self.strided_conv_pool): ###
+                    a = self.conv_layers['a_strided'][l].call(a)
+                else:
+                    a = self.pool.call(a)  # target for next layer
 
         if self.output_layer_type is None:
             if self.output_mode == 'prediction':

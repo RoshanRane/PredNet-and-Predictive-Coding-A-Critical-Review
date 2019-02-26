@@ -116,6 +116,7 @@ parser.add_argument("--ahat_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 
 parser.add_argument("--r_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="R_filt_sizes")
 parser.add_argument("--frame_selection", type=str, default="smth-smth-baseline-method",
                     help="n frame selection method for sequence generator")
+parser.add_argument("--strided_conv_pool", default=False, action="store_true", help="Replace all MaxPools with strided conv in the PredNet")
 
 
 # Extrapolation attributes
@@ -178,7 +179,6 @@ if args.train_model_flag:
     input_shape = (args.n_channels, args.im_height, args.im_width) if K.image_data_format() == 'channels_first' else (
         args.im_height, args.im_width, args.n_channels)
     stack_sizes = tuple([args.n_channels] + args.n_chan_layer)
-
     # weighting for each layer in final loss; "L_0" model:  [1, 0, 0, 0], "L_all": [1, 0.1, 0.1, 0.1]
     # Checking if all the values in layer_loss are between 0.0 and 1.0
     # Checking if the length of all layer loss list is equal to the number of prednet layers
@@ -190,11 +190,11 @@ if args.train_model_flag:
     time_loss_weights = 1. / (time_steps - 1) * np.ones((time_steps, 1))
     time_loss_weights[0] = 0
 
-    r_stack_sizes = stack_sizes
+    r_stack_sizes = stack_sizes #hardcoded
 
     # Configuring the model
     prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes,
-                      output_mode='error', return_sequences=True)
+                      output_mode='error', strided_conv_pool=args.strided_conv_pool, return_sequences=True)
 
     inputs = Input(shape=(time_steps,) + input_shape)
 
@@ -283,124 +283,6 @@ if args.train_model_flag:
 
 else:
     pass
-########################################################################################################################
-
-
-########################################### Extrapolate the model ######################################################
-if args.finetune_extrapolate_model_flag:
-    print("###################################### Extrapolating the model ############################################")
-    # Define loss as MAE of frame predictions after t=0
-    # It doesn't make sense to compute loss on error representation, since the error isn't wrt ground truth when
-    # extrapolating.
-
-    def extrap_loss(y_true, y_hat):
-        y_true = y_true[:, 1:]
-        y_hat = y_hat[:, 1:]
-        return 0.5 * K.mean(K.abs(y_true - y_hat), axis=-1)
-        # 0.5 to match scale of loss when trained in error mode (positive and negative errors split)
-
-    nt = time_steps
-    extrap_json_file = os.path.join(args.weight_dir, 'prednet_model-extrapfinetuned.json')
-
-    # Throw an exception if the weight directory is empty
-    if not os.listdir(args.weight_dir):
-        sys.exit('Weight directory is empty. Please Train the model for t+1 prediction before extrapolating it.')
-
-    # Getting all the filenames in the weight directory
-    file_name,valid_loss_value = ([] for i in range(2))
-    for weights_file in glob.glob(args.weight_dir + "/*.hdf5"):
-        file_name.append(weights_file)
-
-    if len(file_name) > 1:
-        # For models saved at every n epochs
-        # Getting the weight file with lowest reconstruction loss.
-        valid_loss_value = [float(values.split("-")[-1].split(".hdf5")[0][4:]) for values in file_name]
-        min_loss_file_index = np.argmin(valid_loss_value)
-        file = file_name[min_loss_file_index]
-        filename = file.split("/")[-1].split(".hdf5")[0]
-    else:
-        filename = file_name[0].split("/")[-1].split(".hdf5")[0]
-
-    if args.extrap_start_time is None:
-        extrap_start_time = time_steps/2
-    else:
-        extrap_start_time = args.extrap_start_time
-
-    # Load trained model
-    f = open(json_file, 'r')
-    json_string = f.read()
-    f.close()
-    train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet})
-    train_model.load_weights(weights_file)
-
-    layer_config = train_model.layers[1].get_config()
-    layer_config['output_mode'] = 'prediction'
-    layer_config['extrap_start_time'] = extrap_start_time
-    data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
-    prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
-
-    input_shape = list(train_model.layers[0].batch_input_shape[1:])
-    input_shape[0] = time_steps
-
-    inputs = Input(input_shape)
-    predictions = prednet(inputs)
-    model = Model(inputs=inputs, outputs=predictions)
-    model.compile(loss=extrap_loss, optimizer='adam')
-
-    train_generator = SmthSmthSequenceGenerator(train_data
-                                                , nframes=args.nframes
-                                                , fps=args.fps
-                                                , target_im_size=(args.im_height, args.im_width)
-                                                , batch_size=args.batch_size
-                                                , horizontal_flip=args.horizontal_flip
-                                                , shuffle=True, seed=args.seed
-                                                , nframes_selection_mode=args.frame_selection
-                                                , output_mode="prediction"
-                                                )
-
-    val_generator = SmthSmthSequenceGenerator(val_data
-                                              , nframes=args.nframes
-                                              , fps=args.fps
-                                              , target_im_size=(args.im_height, args.im_width)
-                                              , batch_size=args.batch_size                                              
-                                              , horizontal_flip=args.horizontal_flip
-                                              , shuffle=True, seed=args.seed
-                                              , nframes_selection_mode=args.frame_selection
-                                              , output_mode='prediction'
-                                              )
-
-    # start with lr of 0.001 and then drop to 0.0001 after half number of epochs
-#     lr_schedule = lambda epoch: 0.001 if epoch < args.lr_reduce_epoch else 0.0001
-#     callbacks = [LearningRateScheduler(lr_schedule)]
-    callbacks = []
-
-    # where weights will be saved
-    extrap_weights_file = os.path.join(args.weight_dir, filename + '-extrapolate.hdf5')
-    callbacks.append(ModelCheckpoint(filepath=extrap_weights_file, monitor='val_loss', verbose=1,
-                                     save_best_only=True))
-
-    if (args.samples_per_epoch):
-        steps_per_epoch = args.samples_per_epoch // args.batch_size
-    else:
-        steps_per_epoch = len(train_generator)
-
-    if (args.samples_per_epoch_val):
-        steps_per_epoch_val = args.samples_per_epoch_val // args.batch_size
-    else:
-        steps_per_epoch_val = len(val_generator)
-
-    history = model.fit_generator(train_generator,
-                                  steps_per_epoch=steps_per_epoch,
-                                  callbacks=callbacks,
-                                  validation_data=val_generator,
-                                  validation_steps=steps_per_epoch_val)
-
-    json_string = model.to_json()
-    with open(extrap_json_file, "w") as f:
-        f.write(json_string)
-########################################################################################################################
-
-
 ############################################## Evaluate model ##########################################################
 if args.evaluate_model_flag:
     print("########################################### Evaluating data ###############################################")
