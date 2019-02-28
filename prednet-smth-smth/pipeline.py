@@ -264,9 +264,8 @@ if args.train_model_flag:
     # print out model summary and save model json
     model.summary()
 
-    json_string = model.to_json()
     with open(json_file, "w") as f:
-        f.write(json_string)
+        json.dump(model.to_json(), f, sort_keys=True,  indent=1)
 
     history = model.fit_generator(train_generator
                                   , steps_per_epoch=steps_per_epoch
@@ -309,7 +308,10 @@ if args.evaluate_model_flag:
         f = open(json_file, 'r')
         json_string = f.read()
         f.close()
-        train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet})
+        print(json_string)
+        print(weights_file)
+        train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet})        
+        print(train_model)
         train_model.load_weights(weights_file)
 
         # Create testing model (to output predictions)
