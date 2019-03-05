@@ -7,7 +7,6 @@ import numpy as np
 import os
 import pandas as pd
 from skimage.measure import compare_ssim as ssim
-from skimage.measure import compare_psnr as psnr
 from skimage.transform import rescale
 from scipy.fftpack import fft, fftshift
 import sys
@@ -190,35 +189,24 @@ def return_difference(X_test, X_hat):
     psnr_list = []
     ssim_movement_list = []
     psnr_movement_list = []
-    inf_counter = 0
+        
     for ind in range(len(X_test)):
         ssim_list.append(ssim(X_test[ind], X_hat[ind], multichannel=True))
         #for movement only
         if 0 < ind < len(X_test) and not np.array_equal(X_test[ind], X_test[ind-1]):
             ssim_movement_list.append(ssim(X_test[ind], X_hat[ind], multichannel=True))   
-            if psnr(X_test[ind], X_hat[ind]) !=  float('inf'):
-                psnr_movement_list.append(psnr(X_test[ind], X_hat[ind]))
-            else:
-                inf_counter += 1
-        
-        if psnr(X_test[ind], X_hat[ind]) !=  float('inf'):
-            psnr_list.append(psnr(X_test[ind], X_hat[ind]))
-        else:
-            inf_counter += 1
-                                 
-    psnr_list.extend([max(psnr_list)] * inf_counter) #inf means the frames are the same so i add the max of the list for each inf 
-    if psnr_movement_list != []:
-        psnr_movement_list.extend([max(psnr_movement_list)] * inf_counter)
+            psnr_movement_list.append(compare_psnr(X_test[ind], X_hat[ind], epsilon=0.00005))
+         
+        psnr_list.append(compare_psnr(X_test[ind], X_hat[ind], epsilon=0.00005))
     
     return np.mean(ssim_list), np.mean(psnr_list), np.mean(ssim_movement_list), np.mean(psnr_movement_list)
                              
-def sharpness_difference_grad(X_test, X_hat):
+def sharpness_difference_grad(X_test, X_hat, epsilon=0.00005):
     '''
     return sharpness difference for one video based on Mathieu 2016 
     the bigger the better
     '''
     differences = []
-    inf_counter = 0 
     
     for ind, frame in enumerate(X_test): 
        
@@ -229,22 +217,19 @@ def sharpness_difference_grad(X_test, X_hat):
         for channel in range(frame.shape[0]):
             
             gy, gx = np.gradient(frame[channel])
-            sum1 = np.sum(np.add(np.abs(gy), np.abs(gx)))
+            sum1 =  (np.abs(gy) + np.abs(gx))
                    
             gy2, gx2 = np.gradient(frame2[channel])
-            sum2 = np.sum(np.add(np.abs(gy2), np.abs(gx2))) 
+            sum2 =  (np.abs(gy2) + np.abs(gx2))
+          
+            res = 10 * np.log10((255*255) / ((np.sum(np.abs(sum1-sum2)+epsilon) / gy.shape[0]*gy.shape[1])))
             
-            res = 10 * np.log10((255*255) / ((np.abs(sum1-sum2) / gy.shape[0]*gy.shape[1]*3 )))
-            
-            if res != float('inf'):         
-                channel_list.append(res)
-            else:
-                inf_counter += 1               
+            channel_list.append(res)
+                        
         
         if channel_list != []:
             differences.append(np.mean(channel_list))
         
-    differences.extend([max(differences)] * inf_counter)  #inf means the frames are the same so i add the max of the list for each inf
     return np.mean(differences)
     
 def conditioned_ssim(X_test, X_hat):
@@ -261,30 +246,97 @@ def conditioned_ssim(X_test, X_hat):
     
     return np.mean([(1-curr)*prv for curr,prv in zip(current,prev)])
 
-# VERY slow
-# def sharpness(vid):
-#     '''
-#     returns sharpness of one video based on De and Masilamani 2013
-#     '''
-#     FMs = []
-#     for frame in range(vid.shape[0]):
-#         for channel in range(vid.shape[3]):
-#             pic = np.transpose(vid[frame], (2,0,1))[channel]
-#             F = fft(pic)
-#             Max = np.max(np.absolute(fftshift(F)))
-#             TH = len([pix for pix in F.flatten() if pix > Max/1000])
-#             FM = TH / (pic.shape[0] * pic.shape[1])
-#             FMs.append(FM)
-            
-#     return np.mean(FMs)
+def sharpness(vid):
+    '''
+    returns sharpness of one video based on De and Masilamani 2013
+    '''
+    FMs = []
+    for frame in range(vid.shape[0]):
+        for channel in range(vid.shape[3]):
+            pic = np.transpose(vid[frame], (2,0,1))[channel]
+            F = fft(pic)
+            Max = np.max(np.absolute(fftshift(F)))
+            TH = (F > Max/1000).sum()
+            FM = TH / (pic.shape[0] * pic.shape[1])
+            FMs.append(FM)
+          
+    return np.mean(FMs)
 
-# def sharpness_difference(X_test, X_hat):
-#     '''
-#     calculates the sharpness difference between prediction and actual video, based on the previous sharpness function
-#     the smaller the better
-#     '''
-#     actual_sharpness = sharpness(X_test)
-#     pred_sharpness = sharpness(X_hat)
-#     return (actual_sharpness-pred_sharpness)
+def sharpness_difference(X_test, X_hat):
+    '''
+    calculates the sharpness difference between prediction and actual video, based on the previous sharpness function
+    the smaller the better
+    '''
+    actual_sharpness = sharpness(X_test)
+    pred_sharpness = sharpness(X_hat)
+    return (actual_sharpness - pred_sharpness)
+
+#the functions below are from https://github.com/scikit-image/scikit-image/blob/master/skimage/measure/simple_metrics.py#L99 
+
+dtype_range = {np.bool_: (False, True),
+               np.bool8: (False, True),
+               np.float16: (-1, 1),
+               np.float32: (-1, 1),
+               np.float64: (-1, 1)}
+
+def compare_mse(im1, im2):
+    """Compute the mean-squared error between two images.
+    Parameters
+    ----------
+    im1, im2 : ndarray
+        Image.  Any dimensionality.
+    Returns
+    -------
+    mse : float
+        The mean-squared error (MSE) metric.
+    """
+    #_assert_compatible(im1, im2)
+    #im1, im2 = _as_floats(im1, im2)
+    return np.mean(np.square(im1 - im2), dtype=np.float64)
+
+def compare_psnr(im_true, im_test, data_range=None, epsilon = 0.00005): ################ added parameter: epsilon
+    """ Compute the peak signal to noise ratio (PSNR) for an image.
+    Parameters
+    ----------
+    im_true : ndarray
+        Ground-truth image.
+    im_test : ndarray
+        Test image.
+    data_range : int
+        The data range of the input image (distance between minimum and
+        maximum possible values).  By default, this is estimated from the image
+        data-type.
+    noise : float
+        Number added to MSE.
+    Returns
+    -------
+    psnr : float
+        The PSNR metric.
+    References
+    ----------
+    .. [1] https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio
+    """
+    #_assert_compatible(im_true, im_test)
+
+    if data_range is None:
+        if im_true.dtype != im_test.dtype:
+            warn("Inputs have mismatched dtype.  Setting data_range based on "
+                 "im_true.")
+        dmin, dmax = dtype_range[im_true.dtype.type]
+        true_min, true_max = np.min(im_true), np.max(im_true)
+        if true_max > dmax or true_min < dmin:
+            raise ValueError(
+                "im_true has intensity values outside the range expected for "
+                "its data type.  Please manually specify the data_range")
+        if true_min >= 0:
+            # most common case (255 for uint8, 1 for float)
+            data_range = dmax
+        else:
+            data_range = dmax - dmin
+
+    #im_true, im_test = _as_floats(im_true, im_test)
+
+    err = compare_mse(im_true, im_test) + epsilon ######################### modification: epsilon to mse to avoid zero division issues
+    return 10 * np.log10((data_range ** 2) / err)
 
       

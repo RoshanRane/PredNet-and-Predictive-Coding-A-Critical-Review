@@ -37,7 +37,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
 from data_utils import SmthSmthSequenceGenerator
 from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r, return_difference
-from viz_utils import conditioned_ssim, sharpness_difference_grad #, sharpness, sharpness_difference
+from viz_utils import conditioned_ssim, sharpness_difference_grad, sharpness, sharpness_difference
 from prednet import PredNet
 ########################################################################################################################
 
@@ -344,7 +344,8 @@ if args.evaluate_model_flag:
         mse_model_list, mse_prev_list, mae_model_list, mae_prev_list = ([] for i in range(4))
         psnr_list, ssim_list, sharpness_grad_list, psnr_prev_list, ssim_prev_list, sharpness_grad_prev_list = ([] for i in range(6))
         psnr_movement_list, psnr_movement_prev_list, ssim_movement_list, ssim_movement_prev_list =  ([] for i in range(4))
-        conditioned_ssim_list, sharpness_list = ([] for i in range(2))
+        conditioned_ssim_list, sharpness_list, sharpness_prev_list = ([] for i in range(3))
+ 
                                              
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
@@ -390,11 +391,15 @@ if args.evaluate_model_flag:
             # sharpness
             sharpness_grad_list.append(np.mean([sharpness_difference_grad(X_test[ind][1:], X_hat[ind][1:])
                                            for ind in range(X_test.shape[0])]))
-            sharpness_grad_prev_list.append(np.mean([sharpness_difference_grad(X_test[ind][:-1], X_test[ind][1:])
-                                                for ind in range(X_test.shape[0]-1)]))
-         # this is very slow
-         #   sharpness_list.append(np.mean([sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
-         #                                 for ind in range(X_test.shape[0])]))
+            #sharpness_grad_prev_list.append(np.mean([sharpness_difference_grad(X_test[ind][:-1], X_test[ind][1:])
+            #                                    for ind in range(X_test.shape[0]-1)]))
+          
+            sharpness_list.append(np.mean([sharpness_difference(X_test[ind][1:], X_hat[ind][1:])
+                                          for ind in range(X_test.shape[0])]))
+            #sharpness_prev_list.append(np.mean([sharpness_difference(X_test[ind][:-1], X_test[ind][1:])
+            #                               for ind in range(X_test.shape[0])]))
+            
+        
         # save in a dict and limit the size of float decimals to max 6
         results_dict = {                    
         "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
@@ -415,8 +420,9 @@ if args.evaluate_model_flag:
         "PSNR_movement_mean": float("{:.6f}".format(np.mean(psnr_movement_list))), 
         "PSNR_movement_mean_prev_frame_copy": float("{:.6f}".format(np.mean(psnr_movement_prev_list))), 
         "Sharpness_grad_mean": float("{:.6f}".format(np.mean(sharpness_grad_list))),
-        "Sharpness_grad_mean_prev_frame_copy": float("{:.6f}".format(np.mean(sharpness_grad_prev_list))),
-        #"Sharpness_difference": float("{:.6f}".format(np.mean(sharpness_list)))
+        #"Sharpness_grad_mean_prev_frame_copy": float("{:.6f}".format(np.mean(sharpness_grad_prev_list))),
+        "Sharpness_difference_mean": float("{:.6f}".format(np.mean(sharpness_list)))
+        #"Sharpness_difference_mean_prev_frame_copy" : float("{:.6f}".format(np.mean(sharpness_prev_list)))
         }
             
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
