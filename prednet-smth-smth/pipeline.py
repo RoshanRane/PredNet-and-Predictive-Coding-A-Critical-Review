@@ -17,8 +17,7 @@ import pandas as pd
 import keras
 from keras import backend as K
 from keras.models import Model, model_from_json
-from keras.layers import Input, Dense, Flatten
-from keras.layers import TimeDistributed
+from keras.layers import Input, Dense, Flatten, Lambda, TimeDistributed
 from keras.callbacks import LearningRateScheduler, ModelCheckpoint
 from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping
@@ -35,7 +34,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Custom imports
 from preprocess_data import split_data, extract_videos, create_dataframe, _chunks
-from data_utils import SmthSmthSequenceGenerator
+from data_utils import SmthSmthSequenceGenerator, get_exp_t_weights, get_verb_mask
 from viz_utils import plot_loss_curves, plot_errors, plot_changes_in_r, return_difference
 from viz_utils import conditioned_ssim, sharpness_difference_grad, sharpness, sharpness_difference
 from prednet import PredNet
@@ -69,6 +68,12 @@ parser.add_argument("--batch_size", type=int, default=32, help="batch size to us
 parser.add_argument("--layer_loss", nargs='+', type=float, default=[1., 0., 0., 0.], help='Weightage of each layer in final loss.')
 parser.add_argument("--loss", type=str, default='mean_absolute_error', help="Loss function")
 parser.add_argument("--optimizer", type=str, default='adam', help="Model Optimizer")
+parser.add_argument("--multitask_flag", default=False, action="store_true", 
+    help="Train in multitask fashion. Model predicts both the next frame as well as the action label of the video.")
+parser.add_argument("--lbl_loss_w", default=1.0, type=float, 
+    help="In multitask training, this hyperparameter can be used to define the weighing for the label classification task.")
+parser.add_argument("--verb_loss_w", default=0.0, type=float, 
+    help="In multitask training, an additional loss is computed for the correct 'verb' class classification. This hyperparameter defines the weighing of that loss. Allowed values are in range [0.,1.]")
 parser.add_argument("--lr", type=float, default=0.001,
                     help="the learning rate during training.")
 parser.add_argument("--lr_reduce_epoch", type=int, default=200,
@@ -107,11 +112,13 @@ parser.add_argument("--im_height", type=int, default=64, help="Image height")
 parser.add_argument("--im_width", type=int, default=80, help="Image width")
 parser.add_argument("--nframes", type=int, default=None, help="number of frames")
 parser.add_argument("--seed", type=int, default=None, help="seed")
-
+parser.add_argument("--nb_classes",type=int, default=174, help="The number of classes in the label, if multitask learning is enabled.")
 # arguments needed by PredNet model
 parser.add_argument("--n_channels", type=int, default=3, help="number of channels - RGB")
 parser.add_argument("--n_chan_layer", nargs='+', type=int, default=[48, 96, 192], help="number of channels for layer 1,2,3 and so "
                                                                            "on depending upon the length of the list.")
+parser.add_argument("--n_chan_R_layer", nargs='+', type=int, default=[], help="number of channels for the R units. \
+    If not specified, made same as n_chan_layer.")
 parser.add_argument("--a_filt_sizes", nargs='+', type=int, default=(3, 3, 3), help="A_filt_sizes")
 parser.add_argument("--ahat_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="Ahat_filt_sizes")
 parser.add_argument("--r_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="R_filt_sizes")
@@ -133,7 +140,7 @@ args = parser.parse_args()
 json_file = os.path.join(args.weight_dir, 'model.json')
 history_file = os.path.join(args.weight_dir, 'training_history.json')
 start_time = time.time()
-
+nb_layers = len(args.n_chan_layer)+1
 # check if fps given is in valid values
 assert args.fps in [1, 2, 3, 6, 12], "allowed values for fps are [1,2,3,6,12] for this dataset. But given {}".format(
     args.fps)
@@ -145,6 +152,8 @@ else:
     time_steps = args.nframes
 
 assert args.plots_per_grp > 0, "plots_per_grp cannot be 0 or negative."
+assert 0.0 <= args.verb_loss_w <=1.0, "verb_loss weight can only have value in the range [0, 1]"
+assert ((args.multitask_flag) and (args.lbl_loss_w > 0.)), "lbl_loss_w must be greater that 0 if multitask_flag is enabled"
 ########################################################################################################################
 
 ############################################### Loading data ###########################################################
@@ -153,6 +162,12 @@ df = pd.read_csv(os.path.join(args.csv_path), low_memory=False)
 if(args.crop_grp):
     assert args.crop_grp in [1,2], "Invalid value for args.crop_grp. Allowed values are 1(30% of dataset of videos with width<420) and 2(70% of dataset of videos with width>=420)"
     df =df[df.crop_group == args.crop_grp]
+if(args.nb_classes != 174): #MAX_CLASSES in smth-smth is 174
+    nlargest_classes = df.ordered_template_id.value_counts().nlargest(args.nb_classes).sort_index().index
+    class_id_remaps = {old_id:new_id for new_id, old_id in enumerate(nlargest_classes)}
+    df = df[df.ordered_template_id.isin(nlargest_classes)]
+    df.ordered_template_id = df.ordered_template_id.map(class_id_remaps)
+    print("Label classification done on following {} classes:\n{}".format(args.nb_classes, df.template.unique()))
 train_data = df[df.split == 'train']
 val_data = df[df.split == 'val']
 test_data = df[df.split == 'holdout']
@@ -180,6 +195,11 @@ if args.train_model_flag:
     input_shape = (args.n_channels, args.im_height, args.im_width) if K.image_data_format() == 'channels_first' else (
         args.im_height, args.im_width, args.n_channels)
     stack_sizes = tuple([args.n_channels] + args.n_chan_layer)
+    if(args.n_chan_R_layer): 
+        r_stack_sizes = tuple([args.n_channels] + args.n_chan_R_layer)
+    else:
+        r_stack_sizes = stack_sizes
+
     # weighting for each layer in final loss; "L_0" model:  [1, 0, 0, 0], "L_all": [1, 0.1, 0.1, 0.1]
     # Checking if all the values in layer_loss are between 0.0 and 1.0
     # Checking if the length of all layer loss list is equal to the number of prednet layers
@@ -191,22 +211,89 @@ if args.train_model_flag:
     time_loss_weights = 1. / (time_steps - 1) * np.ones((time_steps, 1))
     time_loss_weights[0] = 0
 
-    r_stack_sizes = stack_sizes #hardcoded
-
-    # Configuring the model
-    prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes,
-                      output_mode='error', strided_conv_pool=args.strided_conv_pool, return_sequences=True)
+    # weight initial weight layer in time predictions higher. 
 
     inputs = Input(shape=(time_steps,) + input_shape)
+    # print("<d>inputs.shape", inputs)
+    if(args.multitask_flag):
+        output_mode='error_and_label'
+        # Configuring the model
+        prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes
+            , return_sequences=True
+            , output_mode=output_mode, strided_conv_pool=args.strided_conv_pool, nb_classes=args.nb_classes) 
+        # print("<d>compute_output_shape:",  prednet.compute_output_shape(inputs))
+        errors_and_labels = prednet(inputs)  # errors will be (batch_size, nt, nb_layers), labels will be (batch_size, nt, num_classes)
+        errors = Lambda(lambda x: x[:,:,:nb_layers], output_shape=(time_steps,nb_layers,))(errors_and_labels)
+        labels = Lambda(lambda x: x[:,:,nb_layers:], output_shape=(time_steps,args.nb_classes,))(errors_and_labels)
+        # print("<d>o.shape", errors_and_labels.shape)
+        # print("<d>errors.shape", errors.shape)
+        # print("<d>labels.shape", labels.shape)
+        errors_by_time = TimeDistributed(Dense(1, trainable=False), weights=[layer_loss_weights, np.zeros(1)],
+                                         trainable=False)(errors)  # calculate weighted error by layer
+        errors_by_time = Flatten()(errors_by_time)  # will be (batch_size, nt)
+        final_errors = Dense(1, weights=[time_loss_weights, np.zeros(1)], trainable=False, name='y')(
+            errors_by_time) # weight errors by time
 
-    errors = prednet(inputs)  # errors will be (batch_size, nt, nb_layers)
-    errors_by_time = TimeDistributed(Dense(1, trainable=False), weights=[layer_loss_weights, np.zeros(1)],
-                                     trainable=False)(errors)  # calculate weighted error by layer
-    errors_by_time = Flatten()(errors_by_time)  # will be (batch_size, nt)
-    final_errors = Dense(1, weights=[time_loss_weights, np.zeros(1)], trainable=False)(
-        errors_by_time)  # weight errors by time
-    model = Model(inputs=inputs, outputs=final_errors)
-    model.compile(loss=args.loss, optimizer=args.optimizer)
+        # weighed sum of all label predictions over time
+        labels = Lambda(lambda x: K.permute_dimensions(x,(0,2,1)))(labels) #Lambda(lambda x: K.sum(x, axis=1))
+        # get_exp_t_weights() returns the weights that start at 0.0 and raise exponentially to 1.0 and plateau. 
+        # Motivated by our prior belief that the model is allowed to slowly learn the right prediction class over time.
+        time_label_weights = get_exp_t_weights(time_steps)
+
+        final_labels = Dense(1, weights=[time_label_weights, np.zeros(1)], trainable=False)(
+            labels) # weight labels by time      
+        final_labels = Flatten(name='label')(final_labels)
+        # print("<d>final_labels.shape", final_labels.shape)
+        model = Model(inputs=inputs, outputs=([final_errors, final_labels]))
+
+        if(args.verb_loss_w):
+            verb_masks = get_verb_mask(df)
+        # sparse_categorial_crossentropy_with_logits loss function for labels
+        def CEloss(y_true, logits):
+            loss = K.categorical_crossentropy(target=y_true, output=logits, from_logits=True)
+            # loss = tf.Print(loss, [loss], "<d>loss", summarize=50) 
+            if(args.verb_loss_w):
+                # get the class mask for the label having the same verb as the correct label
+                lbls = K.cast(K.argmax(y_true), tf.int32)
+                mask = tf.batch_gather(verb_masks, lbls)   
+                # print("<d>mask.shape",mask.shape) 
+                # mask = tf.Print(mask, [mask], "<d>mask", summarize=50)
+                # weighted_categorical_crossentropy
+                y_pred = K.softmax(logits)
+                # y_pred = tf.Print(y_pred, [y_pred], "<d>y_pred", summarize=50)
+                # clip to prevent NaN's and Inf's 
+                y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+                # sum all the prediction probability of classes having the same verb and check if equals 1.0 
+                verb_grp_pred = K.sum((y_pred * mask), -1)
+                verb_loss = -K.log(verb_grp_pred) # * y_true = 1.0 
+                # verb_loss = tf.Print(verb_loss, [verb_loss], "<d>verb_loss", summarize=50) 
+                # print("<d>verb_loss.shape",verb_loss.shape)
+                # verb_loss = -K.sum(verb_loss, -1) #/ K.sum(mask, -1) # average w.r.t. the number of unmasked entries to avoid unfair statistical advantages to certain verb classes              
+                return args.verb_loss_w * verb_loss + args.lbl_loss_w * loss
+            
+            else:
+                return args.lbl_loss_w * loss
+
+
+        model.compile(
+            loss={'y': args.loss, 'label':CEloss }
+            , optimizer=args.optimizer
+            , metrics={'y': ['mse'], 'label': ['acc']}
+            )
+        
+    else:
+        output_mode='error'
+        # Configuring the model
+        prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes,
+                          output_mode=output_mode, strided_conv_pool=args.strided_conv_pool, return_sequences=True)
+        errors = prednet(inputs)  # errors will be (batch_size, nt, nb_layers)
+        errors_by_time = TimeDistributed(Dense(1, trainable=False), weights=[layer_loss_weights, np.zeros(1)],
+                                         trainable=False)(errors)  # calculate weighted error by layer
+        errors_by_time = Flatten()(errors_by_time)  # will be (batch_size, nt)
+        final_errors = Dense(1, weights=[time_loss_weights, np.zeros(1)], trainable=False)(
+            errors_by_time)  # weight errors by time
+        model = Model(inputs=inputs, outputs=final_errors)
+        model.compile(loss=args.loss, optimizer=args.optimizer)
 
     train_generator = SmthSmthSequenceGenerator(train_data
                                                 , nframes=args.nframes
@@ -215,7 +302,9 @@ if args.train_model_flag:
                                                 , batch_size=args.batch_size
                                                 , horizontal_flip=args.horizontal_flip
                                                 , shuffle=True, seed=args.seed
+                                                , output_mode = output_mode
                                                 , nframes_selection_mode=args.frame_selection
+                                                , nb_classes=args.nb_classes
                                                 )
 
     val_generator = SmthSmthSequenceGenerator(val_data
@@ -225,7 +314,9 @@ if args.train_model_flag:
                                               , batch_size=args.batch_size
                                               , horizontal_flip=False
                                               , shuffle=True, seed=args.seed
+                                              , output_mode = output_mode
                                               , nframes_selection_mode=args.frame_selection
+                                              , nb_classes=args.nb_classes
                                               )
     
     # start with lr of 0.001 and then drop to 0.0001 after 75 epochs
@@ -235,13 +326,13 @@ if args.train_model_flag:
     # Model checkpoint callback
     if args.model_checkpoint is None:
         period = 1
-        weights_file = os.path.join(args.weight_dir, 'checkpoint-best.hdf5')  # where weights will be saved
+        weight_file = os.path.join(args.weight_dir, 'checkpoint-best.hdf5')  # where weights will be saved
     else:
         assert args.model_checkpoint <= args.nb_epochs, "'model_checkpoint' arg must be less than 'nb_epochs' arg"
         period = args.model_checkpoint
-        weights_file = os.path.join(args.weight_dir, "checkpoint-{epoch:03d}-loss{val_loss:.5f}.hdf5")
+        weight_file = os.path.join(args.weight_dir, "checkpoint-{epoch:03d}-loss{val_loss:.5f}.hdf5")
 
-    callbacks.append(ModelCheckpoint(filepath=weights_file, monitor='val_loss', verbose=1,
+    callbacks.append(ModelCheckpoint(filepath=weight_file, monitor='val_loss', verbose=1,
                                      save_best_only=True, save_weights_only=False,
                                      mode='auto', period=period))
 
@@ -265,7 +356,7 @@ if args.train_model_flag:
     model.summary()
 
     with open(json_file, "w") as f:
-        json.dump(model.to_json(), f, sort_keys=True,  indent=1)
+        f.write(model.to_json())
 
     history = model.fit_generator(train_generator
                                   , steps_per_epoch=steps_per_epoch
@@ -280,6 +371,10 @@ if args.train_model_flag:
         json.dump(history.history, f, sort_keys=True,  indent=4)
 
     plot_loss_curves(history, "MSE", "Prednet", args.weight_dir)
+
+    time_elapsed = time.time() - start_time
+    print("====== Time elapsed until now: {:.0f}h:{:.0f}m:{:.0f}s ======".format(
+        time_elapsed // 3600, (time_elapsed // 60) % 60, time_elapsed % 60))
 
 else:
     pass
@@ -302,21 +397,24 @@ if args.evaluate_model_flag:
         # select the best n models with lowest reconstruction loss
         weight_files = weights_sorted[:args.plot_for_best_n]
 
-    for weights_file in weight_files:
-        filename = weights_file.split("/")[-1].split(".hdf5")[0]
+    for weight_file in weight_files:
+        filename = weight_file.split("/")[-1].split(".hdf5")[0]
         # Load trained model
         f = open(json_file, 'r')
         json_string = f.read()
         f.close()
-        print(json_string)
-        print(weights_file)
-        train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet})        
-        print(train_model)
-        train_model.load_weights(weights_file)
+        
+        train_model = model_from_json(json_string, custom_objects={'PredNet': PredNet, 'nb_layers':nb_layers})
+        train_model.load_weights(weight_file)
 
         # Create testing model (to output predictions)
         layer_config = train_model.layers[1].get_config()
-        layer_config['output_mode'] = 'prediction'
+        if(args.multitask_flag):
+            output_mode = 'prediction_and_label'
+        else:            
+            output_mode = 'prediction'
+
+        layer_config['output_mode'] = output_mode
         data_format = layer_config['data_format'] if 'data_format' in layer_config else layer_config['dim_ordering']
         test_prednet = PredNet(weights=train_model.layers[1].get_weights(), **layer_config)
         input_shape = list(train_model.layers[0].batch_input_shape[1:])
@@ -332,7 +430,9 @@ if args.evaluate_model_flag:
                                                    , batch_size=args.batch_size
                                                    , horizontal_flip=False
                                                    , shuffle=True, seed=args.seed
+                                                   , output_mode = output_mode
                                                    , nframes_selection_mode=args.frame_selection
+                                                   , nb_classes=args.nb_classes
                                                    )
 
         if (args.samples_test):
@@ -345,15 +445,37 @@ if args.evaluate_model_flag:
         psnr_list, ssim_list, sharpness_grad_list, psnr_prev_list, ssim_prev_list, sharpness_grad_prev_list = ([] for i in range(6))
         psnr_movement_list, psnr_movement_prev_list, ssim_movement_list, ssim_movement_prev_list =  ([] for i in range(4))
         conditioned_ssim_list, sharpness_list, sharpness_prev_list = ([] for i in range(3))
- 
-                                             
+        accuracy_list = []
+
         for index, data in enumerate(test_generator):
             # Only consider steps_test number of steps
             if index > max_test_batches:
                 break
             # X_test = test_generator.next()[0]
-            X_test = data[0]
-            X_hat = test_model.predict(X_test, args.batch_size)
+            X_test = data[0]        
+
+            if(args.multitask_flag):
+                lbl = data[1]['label']
+                lbl_final = lbl.argmax(axis=-1)
+                X_hat_with_lbl = test_model.predict(X_test, args.batch_size)
+                X_hat, lbl_hat = X_hat_with_lbl[:,:,:-args.nb_classes], X_hat_with_lbl[:,:,-args.nb_classes:]
+                # print("<d>", lbl_hat.shape, lbl_hat.max(), lbl_hat.min(), lbl_hat.mean())
+                X_hat  = np.reshape(X_hat, X_test.shape) 
+                lbl_pred_final_logits = np.moveaxis(lbl_hat,1,2).dot(get_exp_t_weights(time_steps)).squeeze()
+                lbl_pred_final = lbl_pred_final_logits.argmax(axis=-1)
+                if not(index): # print out the labels for the first round
+                    print("Expected labels  = ", lbl_final) 
+                    print("Predicted labels = ", lbl_pred_final)
+                    print("Max logits       = ", lbl_pred_final_logits.max(axis=-1).round(decimals=4))
+                    print("Predicted labels (per time_step) = ")
+                    for t in range(time_steps):
+                        lbl_at_t = lbl_hat[:,t,:]
+                        print("(t={}) {}".format(t,[np.argmax(l) for l in lbl_at_t])) 
+                acc = (lbl_pred_final == lbl_final).mean()
+                print("{}, accuracy= {:.2f}%".format(index, acc*100))
+                accuracy_list.append(acc)
+            else:
+                X_hat = test_model.predict(X_test, args.batch_size)
             if data_format == 'channels_first':
                 X_test = np.transpose(X_test, (0, 1, 3, 4, 2))
                 X_hat = np.transpose(X_hat, (0, 1, 3, 4, 2))
@@ -398,8 +520,7 @@ if args.evaluate_model_flag:
                                           for ind in range(X_test.shape[0])]))
             #sharpness_prev_list.append(np.mean([sharpness_difference(X_test[ind][:-1], X_test[ind][1:])
             #                               for ind in range(X_test.shape[0])]))
-            
-        
+
         # save in a dict and limit the size of float decimals to max 6
         results_dict = {                    
         "MSE_mean": float("{:.6f}".format(np.mean(mse_model_list))), 
@@ -424,7 +545,9 @@ if args.evaluate_model_flag:
         "Sharpness_difference_mean": float("{:.6f}".format(np.mean(sharpness_list)))
         #"Sharpness_difference_mean_prev_frame_copy" : float("{:.6f}".format(np.mean(sharpness_prev_list)))
         }
-            
+        if args.multitask_flag:
+            results_dict.update({"accuracy":float("{:.6f}".format(np.mean(accuracy_list)))})
+
         with open(os.path.join(args.result_dir, 'scores_' + filename + '.json'), 'w') as f:
             json.dump(results_dict, f, sort_keys=True,  indent=4)
         
@@ -488,10 +611,22 @@ if args.evaluate_model_flag:
                                            , batch_size=total_vids_to_plt
                                            , shuffle=False, seed=args.seed
                                            , nframes_selection_mode=args.frame_selection
+                                           , nb_classes=args.nb_classes
                                            ).next()[0]
 
-        X_hat = test_model.predict(X_test, total_vids_to_plt)
 
+        if(args.multitask_flag):
+            X_hat_with_lbl = test_model.predict(X_test, args.batch_size)
+            X_hat, lbl_hat = X_hat_with_lbl[:,:,:-args.nb_classes], X_hat_with_lbl[:,:,-args.nb_classes:]
+            X_hat  = np.reshape(X_hat, X_test.shape) 
+            lbl_pred_final_logits = np.squeeze(np.moveaxis(lbl_hat,1,2).dot(get_exp_t_weights(time_steps)))
+            lbl_pred_final_template = []
+            for l in lbl_pred_final_logits:
+                lbl_pred_final = np.argmax(l)
+                template = test_data[test_data.ordered_template_id == lbl_pred_final].template.unique()[0]
+                lbl_pred_final_template.append(template)
+        else:
+            X_hat = test_model.predict(X_test, total_vids_to_plt)
        ############################################## Extra plots ##############################################
         
         if args.extra_plots_flag:
@@ -551,7 +686,17 @@ if args.evaluate_model_flag:
                 fig, ax = plt.subplots(ncols=1, nrows=2, sharex=True, figsize=(time_steps, 2 * aspect_ratio))
 
             # set the title of the plot as the label and the video ID for reference
-            fig.suptitle("ID {}: {}".format(test_data_for_plt.loc[i,'id'], test_data_for_plt.loc[i,'label']))
+            if(args.multitask_flag):
+                title = "ID {}. LABEL: {}, PRED: {}".format(
+                test_data_for_plt.loc[i,'id'], 
+                test_data_for_plt.loc[i,'label'],
+                lbl_pred_final_template[i])
+            else:
+                title = "ID {}. LABEL: {}".format(
+                test_data_for_plt.loc[i,'id'], 
+                test_data_for_plt.loc[i,'label'])
+
+            fig.suptitle(title)
 
             #Plot video
             ax = plt.subplot()

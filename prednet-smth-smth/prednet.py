@@ -2,8 +2,8 @@ import numpy as np
 
 from keras import backend as K
 from keras import activations
-from keras.layers import Recurrent
-from keras.layers import Conv2D, UpSampling2D, MaxPooling2D
+from keras.layers import Recurrent, Layer
+from keras.layers import Conv2D, UpSampling2D, MaxPooling2D, Conv2DTranspose
 from keras.engine import InputSpec
 from keras_utils import legacy_prednet_support
 
@@ -44,6 +44,8 @@ class PredNet(Recurrent):
             If 'all', the output will be the frame prediction concatenated with the mean layer errors.
                 The frame prediction is flattened before concatenation.
                 Nomenclature of 'all' is kept for backwards compatibility, but should not be confused with returning all of the layers of the model
+            If 'error_and_label', enters 'multitask training mode'. Returns a tuple of errors and labels 
+            If 'prediction_and_label', enters 'multitask training mode'. Returns a tuple of predictions and labels
             For returning the features of a particular layer, output_mode should be of the form unit_type + layer_number.
                 For instance, to return the features of the LSTM "representational" units in the lowest layer, output_mode should be specificied as 'R0'.
                 The possible unit types are 'R', 'Ahat', 'A', and 'E' corresponding to the 'representation', 'prediction', 'target', and 'error' units respectively.
@@ -66,7 +68,7 @@ class PredNet(Recurrent):
                  pixel_max=1., error_activation='relu', A_activation='relu',
                  LSTM_activation='tanh', LSTM_inner_activation='hard_sigmoid',
                  output_mode='error', extrap_start_time=None,
-                 data_format=K.image_data_format(), strided_conv_pool=False, **kwargs): ###
+                 data_format=K.image_data_format(), strided_conv_pool=False, nb_classes=174, lbl_stack_sizes=[256], **kwargs): ### hardcoded nb_classes
         self.stack_sizes = stack_sizes
         self.nb_layers = len(stack_sizes)
         assert len(R_stack_sizes) == self.nb_layers, 'len(R_stack_sizes) must equal len(stack_sizes)'
@@ -85,7 +87,8 @@ class PredNet(Recurrent):
         self.LSTM_inner_activation = activations.get(LSTM_inner_activation)
         self.strided_conv_pool = strided_conv_pool ###
 
-        default_output_modes = ['prediction', 'error', 'all']
+        self.nb_classes = nb_classes ### 
+        default_output_modes = ['prediction', 'error', 'all', 'error_and_label', 'prediction_and_label'] ### 
         layer_output_modes = [layer + str(n) for n in range(self.nb_layers) for layer in ['R', 'E', 'A', 'Ahat']]
         assert output_mode in default_output_modes + layer_output_modes, 'Invalid output_mode: ' + str(output_mode)
         self.output_mode = output_mode
@@ -96,6 +99,9 @@ class PredNet(Recurrent):
             self.output_layer_type = None
             self.output_layer_num = None
         self.extrap_start_time = extrap_start_time
+        self.multi_task_train = (output_mode in ['error_and_label','prediction_and_label']) 
+        if(self.multi_task_train):
+            self.lbl_pred_chns = lbl_stack_sizes
 
         assert data_format in {'channels_last', 'channels_first'}, 'data_format must be in {channels_last, channels_first}'
         self.data_format = data_format
@@ -111,6 +117,10 @@ class PredNet(Recurrent):
             out_shape = input_shape[2:]
         elif self.output_mode == 'error':
             out_shape = (self.nb_layers,)
+        elif self.output_mode == 'error_and_label':
+            out_shape = (self.nb_layers + self.nb_classes,)
+        elif self.output_mode == 'prediction_and_label':
+            out_shape = (np.prod(input_shape[2:]) + self.nb_classes,)
         elif self.output_mode == 'all':
             out_shape = (np.prod(input_shape[2:]) + self.nb_layers,)
         else:
@@ -123,11 +133,16 @@ class PredNet(Recurrent):
                 out_shape = (out_stack_size, out_nb_row, out_nb_col)
             else:
                 out_shape = (out_nb_row, out_nb_col, out_stack_size)
-
-        if self.return_sequences:
+        
+        if (self.return_sequences):
             return (input_shape[0], input_shape[1]) + out_shape
-        else:
-            return (input_shape[0],) + out_shape
+        else: 
+            return (input_shape[0],) + out_shape ### 
+
+            # if (self.output_mode in ['prediction_and_label','error_and_label']):
+            #     return tuple(((input_shape[0], input_shape[1]) + out_shape, 
+            #                     (input_shape[0], input_shape[1], self.nb_classes))) # second output is label of shape (batch_size,nt,)
+            # else:
 
     def get_initial_state(self, x):
         input_shape = self.input_spec[0].shape
@@ -176,13 +191,15 @@ class PredNet(Recurrent):
 
         if self.extrap_start_time is not None:
             initial_states += [K.variable(0, int if K.backend() != 'tensorflow' else 'int32')]  # the last state will correspond to the current timestep
+        
         return initial_states
+
 
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
         self.conv_layers = {c: [] for c in ['i', 'f', 'c', 'o', 'a', 'ahat']}
-        if (self.strided_conv_pool): ###
-            self.conv_layers.update({'a_strided':[]}) ###
+        if (self.strided_conv_pool): ### 
+            self.conv_layers.update({'a_strided':[]}) ### 
             
         for l in range(self.nb_layers):
             for c in ['i', 'f', 'c', 'o']:
@@ -194,10 +211,10 @@ class PredNet(Recurrent):
 
             if l < self.nb_layers - 1:
                 self.conv_layers['a'].append(Conv2D(self.stack_sizes[l+1], self.A_filt_sizes[l], padding='same', activation=self.A_activation, data_format=self.data_format))
-                if (self.strided_conv_pool): ###
-                    self.conv_layers['a_strided'].append(Conv2D(self.stack_sizes[l+1], self.A_filt_sizes[l], strides=(2, 2),  padding='same', activation=self.A_activation, data_format=self.data_format)) ###
+                if (self.strided_conv_pool): ### 
+                    self.conv_layers['a_strided'].append(Conv2D(self.stack_sizes[l+1], self.A_filt_sizes[l], strides=2,  padding='same', activation=self.A_activation, data_format=self.data_format)) ###
         self.upsample = UpSampling2D(data_format=self.data_format)
-        if not(self.strided_conv_pool): ###
+        if not(self.strided_conv_pool): ### 
             self.pool = MaxPooling2D(data_format=self.data_format)
 
         self.trainable_weights = []
@@ -208,24 +225,93 @@ class PredNet(Recurrent):
                 if c == 'ahat':
                     nb_channels = self.R_stack_sizes[l]
                 elif c == 'a' :
-                    nb_channels = 2 * self.R_stack_sizes[l]
-                elif c == 'a_strided': ###
+                    nb_channels = 2 * self.stack_sizes[l] ###
+                elif c == 'a_strided': ### 
                     nb_channels = self.stack_sizes[l+1]                  
                 else:
                     nb_channels = self.stack_sizes[l] * 2 + self.R_stack_sizes[l]
                     if l < self.nb_layers - 1:
                         nb_channels += self.R_stack_sizes[l+1]
+                    if self.multi_task_train and (l == self.nb_layers - 2):
+                        # the additional channels from label prediction unit
+                        nb_channels += self.R_stack_sizes[l+1]
+
                 in_shape = (input_shape[0], nb_channels, nb_row // ds_factor, nb_col // ds_factor)
                 if self.data_format == 'channels_last': in_shape = (in_shape[0], in_shape[2], in_shape[3], in_shape[1])
                 with K.name_scope('layer_' + c + '_' + str(l)):
                     self.conv_layers[c][l].build(in_shape)
                 self.trainable_weights += self.conv_layers[c][l].trainable_weights
+        
+        ### multi-task label prediction unit
+        if self.multi_task_train:
+            # shape of the input tensors that will be fed into the prediction unit
+            lbl_in_shape = ( nb_row // (2**(self.nb_layers-1)), nb_col // (2**(self.nb_layers-1)) )
+            # has a seperate encoder unit and a decoder unit
+            self.lbl_pred_unit = {'enc':[], 'dec':[]}
+            # R-to-labels encoder level 1
+            self.lbl_pred_unit['enc'].append(
+                Conv2D(
+                    self.lbl_pred_chns[0], 
+                    lbl_in_shape, # channel shape is kept same as the incoming tensor which,
+                    padding='valid',  # along with valid padding will reduce dimension of input to 1x1
+                    activation='relu', data_format=self.data_format)
+                )
+            with K.name_scope('lbl_pred_unit_enc_1'):
+                self.lbl_pred_unit['enc'][0].build(
+                    (input_shape[0], lbl_in_shape[0], lbl_in_shape[1], self.R_stack_sizes[-1])
+                    ) ### hardcoded. only words for channels_last
+            
+            # # R-to-labels encoder level 2
+            self.lbl_pred_unit['enc'].append(
+                Conv2D(
+                    self.nb_classes,
+                    1,  # 1x1 Conv kernels. notice that no activation is set. since softmax will be applied in the end in pipeline
+                    data_format=self.data_format)
+                )
+            with K.name_scope('lbl_pred_unit_enc_2'):
+                self.lbl_pred_unit['enc'][1].build(
+                    (input_shape[0], 1, 1, self.lbl_pred_chns[0])
+                    ) ### hardcoded. Only works for channel_last
+            
+            # labels-to-R decoder level 1
+            self.lbl_pred_unit['dec'].append(
+                Conv2DTranspose(
+                    self.R_stack_sizes[-1], # make it match R_stack_size[lmax] output
+                    lbl_in_shape, # reshape to input shape to cat in the top-down
+                    padding='same', 
+                    strides=lbl_in_shape,
+                    activation= 'relu', 
+                    data_format=self.data_format)
+                )
+            with K.name_scope('lbl_pred_unit_dec_1'):
+                self.lbl_pred_unit['dec'][0].build(
+                    (input_shape[0], 1, 1, self.nb_classes)) 
+   
+            # labels-to-R decoder level 2. Does upsampling
+            self.lbl_pred_unit['dec'].append(
+                Conv2DTranspose(
+                    self.R_stack_sizes[-1], # make it match R_stack_size[lmax] output
+                    self.R_filt_sizes[-1], 
+                    padding='same', 
+                    strides=2,
+                    activation='relu', data_format=self.data_format)
+                )
+            with K.name_scope('layer_enc_2'):
+                self.lbl_pred_unit['dec'][1].build(
+                    (input_shape[0], lbl_in_shape[0], lbl_in_shape[1], self.R_stack_sizes[-1])
+                    )
+   
+            self.trainable_weights += self.lbl_pred_unit['enc'][0].trainable_weights
+            self.trainable_weights += self.lbl_pred_unit['enc'][1].trainable_weights
+            self.trainable_weights += self.lbl_pred_unit['dec'][0].trainable_weights
+            self.trainable_weights += self.lbl_pred_unit['dec'][1].trainable_weights
 
         self.states = [None] * self.nb_layers*3
 
         if self.extrap_start_time is not None:
             self.t_extrap = K.variable(self.extrap_start_time, int if K.backend() != 'tensorflow' else 'int32')
             self.states += [None] * 2  # [previous frame prediction, timestep]
+
 
     def step(self, a, states):
         r_tm1 = states[:self.nb_layers]
@@ -257,6 +343,15 @@ class PredNet(Recurrent):
 
             if l > 0:
                 r_up = self.upsample.call(_r)
+            ### predict the labels if multitask prediction is enabled
+            if self.multi_task_train and (l == self.nb_layers-1):
+                enc_1 = self.lbl_pred_unit['enc'][0].call(_r)
+                enc_2 = self.lbl_pred_unit['enc'][1].call(enc_1)
+                # enc_2 is passed as output             
+                labels = (K.batch_flatten(enc_2)) 
+                dec_1 = self.lbl_pred_unit['dec'][0].call(K.reshape(labels, (-1, 1, 1, self.nb_classes)))
+                dec_2 = self.lbl_pred_unit['dec'][1].call(dec_1)
+                r_up = K.concatenate([r_up, dec_2], axis=self.channel_axis)
 
         # Update feedforward path starting from the bottom
         for l in range(self.nb_layers):
@@ -286,23 +381,27 @@ class PredNet(Recurrent):
                 if (self.strided_conv_pool): ###
                     a = self.conv_layers['a_strided'][l].call(a)
                 else:
-                    a = self.pool.call(a)  # target for next layer
+                    a = self.pool.call(a)  # target for next layer            
 
         if self.output_layer_type is None:
-            if self.output_mode == 'prediction':
+            if self.output_mode == 'prediction':  
                 output = frame_prediction
-            else:
+            elif self.output_mode == 'prediction_and_label': ### 
+                output = K.concatenate((K.batch_flatten(frame_prediction), labels), axis=-1)
+            else: # collect output from all layers
                 for l in range(self.nb_layers):
                     layer_error = K.mean(K.batch_flatten(e[l]), axis=-1, keepdims=True)
                     all_error = layer_error if l == 0 else K.concatenate((all_error, layer_error), axis=-1)
                 if self.output_mode == 'error':
                     output = all_error
-                else:
+                elif self.output_mode == 'error_and_label': ### 
+                    output = K.concatenate((all_error, labels), axis=-1)
+                else: # self.output_mode == 'all':
                     output = K.concatenate((K.batch_flatten(frame_prediction), all_error), axis=-1)
-
         states = r + c + e
         if self.extrap_start_time is not None:
             states += [frame_prediction, t + 1]
+
         return output, states
 
     def get_config(self):
@@ -319,6 +418,9 @@ class PredNet(Recurrent):
                   'data_format': self.data_format,
                   'extrap_start_time': self.extrap_start_time,
                   'output_mode': self.output_mode,
-                  'strided_conv_pool':self.strided_conv_pool}
+                  'strided_conv_pool':self.strided_conv_pool,
+                  'nb_classes':self.nb_classes,
+                  'lbl_stack_sizes':self.lbl_pred_chns
+                  }
         base_config = super(PredNet, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))

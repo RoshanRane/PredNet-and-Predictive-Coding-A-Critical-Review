@@ -8,8 +8,10 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from PIL import Image, ImageOps
 from keras import backend as K
+from keras.utils import to_categorical
 from keras_preprocessing.image import Iterator  # , load_img, img_to_array
 import threading
+import tensorflow as tf
 
 
 ########################################################################################################################
@@ -42,7 +44,9 @@ class SmthSmthSequenceGenerator(Iterator):
         if set to 'label' returns the label's template ID.
         if set to 'prediction' simply returns y = X.
         if set to 'error' returns a np.zeros() of same shape as x.
-
+        'error_and_label' returns both error and labels as a dict
+        'prediction_and_label' returns both prediction and labels as a dict
+        
         nframes_selection_mode (optional): Can be one of "smth-smth-baseline-method" or "dynamic-fps"
         if set as "smth-smth-baseline-method",
         a) For num_of_frames < nframes : replicate the first and last frames.
@@ -82,6 +86,7 @@ class SmthSmthSequenceGenerator(Iterator):
                  , horizontal_flip=False
                  , shuffle=True, seed=None
                  , data_format='channels_last'
+                 , nb_classes = 174
                  , debug=False
                  ):
 
@@ -115,7 +120,8 @@ class SmthSmthSequenceGenerator(Iterator):
                         max_nframes, float(len(df_subset)) * 100 / len(df), len(df_subset)))
             df = df_subset
 
-        assert output_mode in {'error', 'prediction', 'label'}, 'output_mode must be in {error, prediction, label}'
+        assert output_mode in {'error', 'prediction', 'label', 'error_and_label', 'prediction_and_label'},\
+'output_mode must be in {error, prediction, label, error_and_label, prediction_and_label}'
         self.output_mode = output_mode
         assert len(target_im_size) == 2, "Invalid 'target_im_size'. It should be a tuple of format (height, width)"
         assert (target_im_size[0] <= min(df.height)) and (target_im_size[1] <= min(df.width)), "Invalid 'target_im_size'.\
@@ -142,6 +148,7 @@ class SmthSmthSequenceGenerator(Iterator):
             print("{} nframes/video set by default.".format(nframes))
             
         self.nframes = nframes
+        self.nb_classes = nb_classes
         
         _PIL_INTERPOLATION_METHODS = {
             'LANCZOS': Image.LANCZOS,
@@ -155,7 +162,7 @@ class SmthSmthSequenceGenerator(Iterator):
         self.horizontal_flip = horizontal_flip
         if (self.horizontal_flip):
             # if we flip, some labels need to be remapped which contain these orientation information
-            self.some_label_remaps = {166: 167, 167: 166, 93: 94, 94: 93, 86: 87, 87: 86}
+            self.some_label_remaps = {73: 72, 72: 73, 87: 88, 88: 87, 89: 90, 90: 89}
         self.random_crop = random_crop
         self.shuffle = shuffle
         self.seed = seed
@@ -185,16 +192,26 @@ class SmthSmthSequenceGenerator(Iterator):
             batch_y = np.zeros(self.batch_size, np.float32)
         elif self.output_mode == 'prediction':  # output actual pixels
             batch_y = batch_x
-        elif self.output_mode == 'label':
-            batch_y = np.asarray(self.df.loc[index_array, "template_id"])
+        elif 'label' in self.output_mode:
+            labels = np.asarray(self.df.loc[index_array, "ordered_template_id"])
             if (self.horizontal_flip):
                 # remap the effected horizontally flipped labels
-                for i in range(len(batch_y)):
-                    if (hor_flipped[i]) and (batch_y[i] in self.some_label_remaps.keys()):
-                        if (self.debug): print("idx {}: label {} replaced with {}".format(i, batch_y[i],
+                for i in range(len(labels)):
+                    if (hor_flipped[i]) and (labels[i] in self.some_label_remaps.keys()):
+                        if (self.debug): print("idx {}: label {} replaced with {}".format(i, labels[i],
                                                                                           self.some_label_remaps[
-                                                                                              batch_y[i]]))
-                        batch_y[i] = self.some_label_remaps[batch_y[i]]
+                                                                                              labels[i]]))
+                        labels[i] = self.some_label_remaps[labels[i]]
+            # one_hot_encode the label
+            labels = to_categorical(labels, num_classes=self.nb_classes)
+            if self.output_mode == 'label':
+                batch_y = labels
+            elif self.output_mode == 'error_and_label':         
+                batch_y = {'y': np.zeros(self.batch_size, np.float32), 'label': labels}
+            elif self.output_mode == 'prediction_and_label':            
+                batch_y = {'y': batch_x, 'label': labels}
+            else:
+                raise NotImplementedError
         else:
             raise NotImplementedError
             
@@ -336,7 +353,28 @@ class SmthSmthSequenceGenerator(Iterator):
         return len(self.df)//self.batch_size
 
 
-# In[71]:
+# function used to generate weights for label predictions over time
+def get_exp_t_weights(nt):
+    w = 1. - np.power(1.3, -np.arange(nt))
+    return np.expand_dims(w,1)
+
+# returns a hashable array of masks as a tf constant
+def get_verb_mask(df):
+    mask_dict = {}
+    verb_map = df[['ordered_template_id','verb_id']].dropna(
+    ).drop_duplicates(
+    ).set_index('ordered_template_id').sort_index()
+    
+    masks = np.empty((len(verb_map), len(verb_map)), dtype=np.float32)
+    for lbl in verb_map.index:
+        lbl =int(lbl)
+        masks[lbl] = (verb_map.verb_id == verb_map.loc[lbl].values[0]).values
+        # give equal probability to all classes which have this verb
+#         masks[lbl] = masks[lbl] / masks[lbl].sum() 
+        
+    masks = tf.constant(masks, name='verb_masks', dtype=tf.float32)
+    return masks
+
 
 if __name__ == '__main__':
     # TEST : runs the generator 10 times and prints out the output dimension of the batches returned
