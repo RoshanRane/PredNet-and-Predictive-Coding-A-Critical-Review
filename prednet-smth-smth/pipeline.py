@@ -411,6 +411,9 @@ if args.evaluate_model_flag:
         layer_config = train_model.layers[1].get_config()
         if(args.multitask_flag):
             output_mode = 'prediction_and_label'
+            if not(layer_config['nb_classes']):
+                print("WARNING: Seems like the model being evaluated-'{}'\
+ is not trained with the multitask_flag on. Please cross check.".format(weight_file)) 
         else:            
             output_mode = 'prediction'
 

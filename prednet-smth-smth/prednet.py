@@ -87,7 +87,6 @@ class PredNet(Recurrent):
         self.LSTM_inner_activation = activations.get(LSTM_inner_activation)
         self.strided_conv_pool = strided_conv_pool ###
 
-        self.nb_classes = nb_classes ### 
         default_output_modes = ['prediction', 'error', 'all', 'error_and_label', 'prediction_and_label'] ### 
         layer_output_modes = [layer + str(n) for n in range(self.nb_layers) for layer in ['R', 'E', 'A', 'Ahat']]
         assert output_mode in default_output_modes + layer_output_modes, 'Invalid output_mode: ' + str(output_mode)
@@ -101,7 +100,12 @@ class PredNet(Recurrent):
         self.extrap_start_time = extrap_start_time
         self.multi_task_train = (output_mode in ['error_and_label','prediction_and_label']) 
         if(self.multi_task_train):
+            self.nb_classes = nb_classes ### 
             self.lbl_pred_chns = lbl_stack_sizes
+        else:
+            self.nb_classes = None 
+            self.lbl_pred_chns = None
+
 
         assert data_format in {'channels_last', 'channels_first'}, 'data_format must be in {channels_last, channels_first}'
         self.data_format = data_format
@@ -183,6 +187,15 @@ class PredNet(Recurrent):
                 initial_state = K.reshape(initial_state, output_shp)
                 initial_states += [initial_state]
 
+        if(self.multi_task_train):
+            output_size = self.nb_classes * 1 * 1 # flattened size
+            reducer = K.zeros((input_shape[self.channel_axis], output_size))
+            initial_state = K.dot(base_initial_state, reducer) # (samples, output_size)
+            output_shp = (-1, 1, 1, self.nb_classes) ### Hardcoded for only 'channel_last'
+            initial_state = K.reshape(initial_state, output_shp)
+            initial_states += [initial_state]
+
+
         if K._BACKEND == 'theano':
             from theano import tensor as T
             # There is a known issue in the Theano scan op when dealing with inputs whose shape is 1 along a dimension.
@@ -241,13 +254,21 @@ class PredNet(Recurrent):
                 with K.name_scope('layer_' + c + '_' + str(l)):
                     self.conv_layers[c][l].build(in_shape)
                 self.trainable_weights += self.conv_layers[c][l].trainable_weights
+
+        self.states = [None] * self.nb_layers*3
+
+        if self.extrap_start_time is not None:
+            self.t_extrap = K.variable(self.extrap_start_time, int if K.backend() != 'tensorflow' else 'int32')
+            self.states += [None] * 2  # [previous frame prediction, timestep]
         
         ### multi-task label prediction unit
         if self.multi_task_train:
             # shape of the input tensors that will be fed into the prediction unit
             lbl_in_shape = ( nb_row // (2**(self.nb_layers-1)), nb_col // (2**(self.nb_layers-1)) )
             # has a seperate encoder unit and a decoder unit
-            self.lbl_pred_unit = {'enc':[], 'dec':[]}
+            self.lbl_pred_unit = {
+            'enc':[], 'dec':[], 'enc_igate':[],  'enc_fgate':[],  'enc_ogate':[]
+            }
             # R-to-labels encoder level 1
             self.lbl_pred_unit['enc'].append(
                 Conv2D(
@@ -256,23 +277,24 @@ class PredNet(Recurrent):
                     padding='valid',  # along with valid padding will reduce dimension of input to 1x1
                     activation='relu', data_format=self.data_format)
                 )
-            with K.name_scope('lbl_pred_unit_enc_1'):
+            with K.name_scope('lbl_pred_unit_enc_0'):
                 self.lbl_pred_unit['enc'][0].build(
                     (input_shape[0], lbl_in_shape[0], lbl_in_shape[1], self.R_stack_sizes[-1])
                     ) ### hardcoded. only words for channels_last
             
-            # # R-to-labels encoder level 2
-            self.lbl_pred_unit['enc'].append(
-                Conv2D(
-                    self.nb_classes,
-                    1,  # 1x1 Conv kernels. notice that no activation is set. since softmax will be applied in the end in pipeline
-                    data_format=self.data_format)
-                )
-            with K.name_scope('lbl_pred_unit_enc_2'):
-                self.lbl_pred_unit['enc'][1].build(
-                    (input_shape[0], 1, 1, self.lbl_pred_chns[0])
-                    ) ### hardcoded. Only works for channel_last
-            
+            # R-to-labels encoder level 2               
+            # 'enc_igate', 'enc_fgate', 'enc_ogate' are lstm gates
+            for l in ['enc', 'enc_igate', 'enc_fgate', 'enc_ogate']:
+                # 1x1 Conv kernels. notice that no activation for the 'enc' since softmax will be applied in the end in pipeline
+                act = None if l == 'enc' else self.LSTM_inner_activation 
+                self.lbl_pred_unit[l].append(
+                Conv2D(self.nb_classes, 1, data_format=self.data_format, activation=act))
+
+                with K.name_scope('lbl_pred_unit_{}_1'.format(l)):
+                            self.lbl_pred_unit[l][-1].build(
+                            (input_shape[0], 1, 1, self.lbl_pred_chns[0])
+                            ) ### hardcoded. Only works for channel_last
+
             # labels-to-R decoder level 1
             self.lbl_pred_unit['dec'].append(
                 Conv2DTranspose(
@@ -283,7 +305,7 @@ class PredNet(Recurrent):
                     activation= 'relu', 
                     data_format=self.data_format)
                 )
-            with K.name_scope('lbl_pred_unit_dec_1'):
+            with K.name_scope('lbl_pred_unit_dec_0'):
                 self.lbl_pred_unit['dec'][0].build(
                     (input_shape[0], 1, 1, self.nb_classes)) 
    
@@ -296,27 +318,25 @@ class PredNet(Recurrent):
                     strides=2,
                     activation='relu', data_format=self.data_format)
                 )
-            with K.name_scope('layer_enc_2'):
+            with K.name_scope('lbl_pred_unit_dec_1'):
                 self.lbl_pred_unit['dec'][1].build(
                     (input_shape[0], lbl_in_shape[0], lbl_in_shape[1], self.R_stack_sizes[-1])
                     )
    
             self.trainable_weights += self.lbl_pred_unit['enc'][0].trainable_weights
-            self.trainable_weights += self.lbl_pred_unit['enc'][1].trainable_weights
+            for l in ['enc', 'enc_igate', 'enc_fgate', 'enc_ogate']:
+                self.trainable_weights += self.lbl_pred_unit[l][-1].trainable_weights
             self.trainable_weights += self.lbl_pred_unit['dec'][0].trainable_weights
             self.trainable_weights += self.lbl_pred_unit['dec'][1].trainable_weights
-
-        self.states = [None] * self.nb_layers*3
-
-        if self.extrap_start_time is not None:
-            self.t_extrap = K.variable(self.extrap_start_time, int if K.backend() != 'tensorflow' else 'int32')
-            self.states += [None] * 2  # [previous frame prediction, timestep]
-
+            # add a state for the enc_1 LSTM unit
+            self.states += [None]
 
     def step(self, a, states):
         r_tm1 = states[:self.nb_layers]
-        c_tm1 = states[self.nb_layers:2*self.nb_layers]
-        e_tm1 = states[2*self.nb_layers:3*self.nb_layers]
+        c_tm1 = states[self.nb_layers: 2*self.nb_layers]
+        e_tm1 = states[2*self.nb_layers: 3*self.nb_layers]
+        if self.multi_task_train:
+            lbl_tm1 = [states[-1]]
 
         if self.extrap_start_time is not None:
             t = states[-1]
@@ -346,10 +366,15 @@ class PredNet(Recurrent):
             ### predict the labels if multitask prediction is enabled
             if self.multi_task_train and (l == self.nb_layers-1):
                 enc_1 = self.lbl_pred_unit['enc'][0].call(_r)
-                enc_2 = self.lbl_pred_unit['enc'][1].call(enc_1)
+                i = self.lbl_pred_unit['enc_igate'][-1].call(enc_1)
+                f = self.lbl_pred_unit['enc_fgate'][-1].call(enc_1)
+                o = self.lbl_pred_unit['enc_ogate'][-1].call(enc_1)
+                lbl_c = f * lbl_tm1[-1] + i * self.lbl_pred_unit['enc'][-1].call(enc_1)
+                enc_2 = o * lbl_c # no activation is used since softmax will be applied at the end of t 
+
                 # enc_2 is passed as output             
                 labels = (K.batch_flatten(enc_2)) 
-                dec_1 = self.lbl_pred_unit['dec'][0].call(K.reshape(labels, (-1, 1, 1, self.nb_classes)))
+                dec_1 = self.lbl_pred_unit['dec'][0].call(enc_2)
                 dec_2 = self.lbl_pred_unit['dec'][1].call(dec_1)
                 r_up = K.concatenate([r_up, dec_2], axis=self.channel_axis)
 
@@ -399,6 +424,8 @@ class PredNet(Recurrent):
                 else: # self.output_mode == 'all':
                     output = K.concatenate((K.batch_flatten(frame_prediction), all_error), axis=-1)
         states = r + c + e
+        if self.multi_task_train:
+            states += [lbl_c]
         if self.extrap_start_time is not None:
             states += [frame_prediction, t + 1]
 
