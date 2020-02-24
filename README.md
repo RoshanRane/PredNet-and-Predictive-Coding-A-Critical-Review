@@ -4,3 +4,17 @@ The PredNet architecture by Lotter et al. combines a biologically plausible arch
 <p align="center">
   <img width="750" height="500" src="https://github.com/RoshanRane/Predictive-video-classification/blob/master/PredNet_Vanilla.jpg"></img>
 </p>
+
+
+# Paper and bibtex Reference
+[PredNet and Predictive Coding: A Critical Review](https://arxiv.org/abs/1912.00982), Roshan Rane, Edit Szügyi, Vageesh Saxena, André Ofner, Sebastian Stober
+```
+@misc{prednetreview2019,
+    title={PredNet and Predictive Coding: A Critical Review},
+    author={Roshan Rane, Edit Szügyi, Vageesh Saxena, André Ofner, Sebastian Stober},
+    year={2019},
+    eprint={1906.11902},
+    archivePrefix={arXiv},
+    primaryClass={cs.CV}
+}
+```
