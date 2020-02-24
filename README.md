@@ -7,7 +7,7 @@ The PredNet architecture by Lotter et al. combines a biologically plausible arch
 
 
 # Paper and bibtex Reference
-[PredNet and Predictive Coding: A Critical Review](https://arxiv.org/abs/1912.00982), Roshan Rane, Edit Szügyi, Vageesh Saxena, André Ofner, Sebastian Stober
+[PredNet and Predictive Coding: A Critical Review](https://arxiv.org/abs/1906.11902), Roshan Rane, Edit Szügyi, Vageesh Saxena, André Ofner, Sebastian Stober
 ```
 @misc{prednetreview2019,
     title={PredNet and Predictive Coding: A Critical Review},
