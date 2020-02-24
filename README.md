@@ -4,4 +4,4 @@ The PredNet architecture by Lotter et al. combines a biologically plausible arch
 <img src="https://github.com/RoshanRane/Predictive-video-classification/blob/master/PredNet_Vanilla.jpg"  height="500" width="750"
      alt="Vanilla PredNet architecture diagram"/>
 
-![Prednet Architecture](https://github.com/RoshanRane/Predictive-video-classification/blob/master/PredNet_Vanilla.jpg)
+!["Prednet Architecture"](https://github.com/RoshanRane/Predictive-video-classification/blob/master/PredNet_Vanilla.jpg)
