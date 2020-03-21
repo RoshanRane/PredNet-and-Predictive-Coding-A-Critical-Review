@@ -119,6 +119,7 @@ parser.add_argument("--n_chan_layer", nargs='+', type=int, default=[48, 96, 192]
                                                                            "on depending upon the length of the list.")
 parser.add_argument("--n_chan_R_layer", nargs='+', type=int, default=[], help="number of channels for the R units. \
     If not specified, made same as n_chan_layer.")
+parser.add_argument("--n_chan_lbl_layer", nargs='+', type=int, default=[256], help="number of channels for level 1 encoder and decoder of the label prediction unit.")
 parser.add_argument("--a_filt_sizes", nargs='+', type=int, default=(3, 3, 3), help="A_filt_sizes")
 parser.add_argument("--ahat_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="Ahat_filt_sizes")
 parser.add_argument("--r_filt_sizes", nargs='+', type=int, default=(3, 3, 3, 3), help="R_filt_sizes")
@@ -153,7 +154,8 @@ else:
 
 assert args.plots_per_grp > 0, "plots_per_grp cannot be 0 or negative."
 assert 0.0 <= args.verb_loss_w <=1.0, "verb_loss weight can only have value in the range [0, 1]"
-assert ((args.multitask_flag) and (args.lbl_loss_w > 0.)), "lbl_loss_w must be greater that 0 if multitask_flag is enabled"
+assert (not(args.multitask_flag) or (args.lbl_loss_w > 0.)), "lbl_loss_w must be greater that 0 if multitask_flag is enabled"
+assert len(args.n_chan_lbl_layer)==1, "n_chan_lbl_layer should be a list of exactly one value. Other options aren't currently supported."
 ########################################################################################################################
 
 ############################################### Loading data ###########################################################
@@ -168,7 +170,7 @@ if(args.nb_classes != 174): #MAX_CLASSES in smth-smth is 174
     df = df[df.ordered_template_id.isin(nlargest_classes)]
     df.ordered_template_id = df.ordered_template_id.map(class_id_remaps)
     print("Label classification done on following {} classes:\n{}".format(args.nb_classes, df.template.unique()))
-train_data = df[df.split == 'train']
+train_data = df[df.split == 'train'] #| (df.split == 'holdout')
 val_data = df[df.split == 'val']
 test_data = df[df.split == 'holdout']
 train_data = train_data[:int(len(train_data) * args.data_split_ratio)]
@@ -220,7 +222,9 @@ if args.train_model_flag:
         # Configuring the model
         prednet = PredNet(stack_sizes, r_stack_sizes, args.a_filt_sizes, args.ahat_filt_sizes, args.r_filt_sizes
             , return_sequences=True
-            , output_mode=output_mode, strided_conv_pool=args.strided_conv_pool, nb_classes=args.nb_classes) 
+            , output_mode=output_mode
+            , strided_conv_pool=args.strided_conv_pool
+            , nb_classes=args.nb_classes, lbl_stack_sizes=args.n_chan_lbl_layer) 
         # print("<d>compute_output_shape:",  prednet.compute_output_shape(inputs))
         errors_and_labels = prednet(inputs)  # errors will be (batch_size, nt, nb_layers), labels will be (batch_size, nt, num_classes)
         errors = Lambda(lambda x: x[:,:,:nb_layers], output_shape=(time_steps,nb_layers,))(errors_and_labels)
@@ -296,7 +300,7 @@ if args.train_model_flag:
         model.compile(loss=args.loss, optimizer=args.optimizer)
 
     train_generator = SmthSmthSequenceGenerator(train_data
-                                                , nframes=args.nframes
+                                                , nframes=time_steps
                                                 , fps=args.fps
                                                 , target_im_size=(args.im_height, args.im_width)
                                                 , batch_size=args.batch_size
@@ -308,7 +312,7 @@ if args.train_model_flag:
                                                 )
 
     val_generator = SmthSmthSequenceGenerator(val_data
-                                              , nframes=args.nframes
+                                              , nframes=time_steps
                                               , fps=args.fps
                                               , target_im_size=(args.im_height, args.im_width)
                                               , batch_size=args.batch_size
@@ -427,7 +431,7 @@ if args.evaluate_model_flag:
         test_model = Model(inputs=inputs, outputs=predictions)
 
         test_generator = SmthSmthSequenceGenerator(test_data
-                                                   , nframes=args.nframes
+                                                   , nframes=time_steps
                                                    , fps=args.fps
                                                    , target_im_size=(args.im_height, args.im_width)
                                                    , batch_size=args.batch_size
@@ -641,6 +645,8 @@ if args.evaluate_model_flag:
                                 + ['Ahat'+str(no) for no in range(no_layers)] + ['R'+str(no) for no in range(no_layers)])
                       
             for output_mode in extra_output_modes:
+                if(args.multitask_flag):
+                    output_mode += "_and_label"
                 layer_config['output_mode'] = output_mode    
                 data_format = (layer_config['data_format'] if 'data_format' in layer_config 
                                 else layer_config['dim_ordering'])
